@@ -1,0 +1,271 @@
+/* 1. Reset */
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+/* 2. Design tokens */
+:root {
+    --bg: #09090b;
+    --surface: #121214;
+    --surface-soft: #1c1c1f;
+    --text: #f4f4f5;
+    --text-muted: #a1a1aa;
+    --border: #27272a;
+    --accent: #06b6d4; /* Cool Cyan */
+    --accent-glow: rgba(6, 182, 212, 0.2);
+    --danger: #ef4444;
+}
+
+/* 3. Layout */
+body {
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, sans-serif;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    overflow: hidden;
+    line-height: 1.6;
+    letter-spacing: 0.01em;
+}
+
+.app-container {
+    width: 100%;
+    max-width: 900px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* 4. Header */
+.app-header {
+    padding: 1.5rem 2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+}
+
+.header-left {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+}
+
+.app-header h1 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    color: var(--text);
+}
+
+.subtitle {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    letter-spacing: 0.1em;
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.status-indicator {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: var(--text-muted);
+    transition: background-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.status {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    transition: color 0.3s ease;
+}
+
+/* 5. Conversation */
+.chat-area {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: 2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+}
+
+/* 6. Messages */
+.message {
+    display: flex;
+    width: 100%;
+    animation: fadeIn 0.4s ease forwards;
+    opacity: 0;
+    transform: translateY(10px);
+}
+
+.message-content {
+    max-width: 85%;
+}
+
+/* P.I.X.I.E. (System) Message */
+.system-msg {
+    justify-content: flex-start;
+}
+
+.system-msg .message-content {
+    color: var(--text);
+    font-size: 1rem;
+    padding-left: 1rem;
+    border-left: 2px solid var(--border);
+}
+
+/* User Message */
+.user-msg {
+    justify-content: flex-end;
+}
+
+.user-msg .message-content {
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    text-align: right;
+}
+
+/* 7. Input */
+.input-container {
+    padding: 1.5rem 2rem;
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    border-top: 1px solid var(--border);
+    background: var(--bg);
+}
+
+.text-input {
+    flex-grow: 1;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 1rem;
+    padding: 0.75rem 0;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.3s ease;
+}
+
+.text-input::placeholder {
+    color: var(--text-muted);
+}
+
+.action-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.2s ease;
+}
+
+.action-btn:hover {
+    color: var(--text);
+}
+
+/* 8. Microphone & States */
+
+/* Body state overrides */
+body[data-state="IDLE"] .status-indicator {
+    background-color: var(--text-muted);
+}
+body[data-state="IDLE"] .status {
+    color: var(--text-muted);
+}
+
+body[data-state="LISTENING"] .status-indicator {
+    background-color: var(--accent);
+    box-shadow: 0 0 8px var(--accent-glow);
+}
+body[data-state="LISTENING"] .status {
+    color: var(--accent);
+}
+body[data-state="LISTENING"] .mic-btn {
+    color: var(--accent);
+    animation: slowPulse 2s infinite ease-in-out;
+}
+
+body[data-state="PROCESSING"] .status-indicator {
+    background-color: var(--text);
+}
+body[data-state="PROCESSING"] .status {
+    color: var(--text);
+}
+
+body[data-state="SPEAKING"] .status-indicator {
+    background-color: var(--accent);
+}
+body[data-state="SPEAKING"] .status {
+    color: var(--accent);
+}
+
+body[data-state="ERROR"] .status-indicator {
+    background-color: var(--danger);
+}
+body[data-state="ERROR"] .status {
+    color: var(--danger);
+}
+
+/* 9. Button Icons (Send vs Stop) */
+.icon-stop {
+    display: none;
+}
+.icon-send {
+    display: block;
+}
+
+body[data-state="SPEAKING"] .icon-send {
+    display: none;
+}
+body[data-state="SPEAKING"] .icon-stop {
+    display: block;
+}
+
+/* 10. Animations */
+@keyframes fadeIn {
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes slowPulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+
+/* 11. Responsive */
+@media (max-width: 600px) {
+    .app-header {
+        padding: 1rem;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+    .header-right {
+        align-self: flex-start;
+    }
+    .chat-area {
+        padding: 1rem;
+    }
+    .input-container {
+        padding: 1rem;
+    }
+}

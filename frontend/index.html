@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P.I.X.I.E. Interface</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body data-state="IDLE">
+    <div class="app-container">
+        <header class="app-header">
+            <div class="header-left">
+                <h1>P.I.X.I.E.</h1>
+            </div>
+            <div class="header-right">
+                <div class="status-indicator"></div>
+                <span class="status" id="agent-status">IDLE</span>
+            </div>
+        </header>
+        
+        <main class="chat-area" id="chat-box">
+            <!-- Chat messages will be appended here -->
+            <div class="message system-msg">
+                <div class="message-content">Welcome to P.I.X.I.E. How can I assist you?</div>
+            </div>
+        </main>
+        
+        <div class="input-container">
+            <button id="mic-btn" class="action-btn mic-btn" aria-label="Start Voice Input">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="22"></line></svg>
+            </button>
+            <input type="text" id="user-input" class="text-input" placeholder="Message P.I.X.I.E..." autocomplete="off">
+            <button id="send-btn" class="action-btn send-btn" aria-label="Send message">
+                <svg class="icon-send" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                <svg class="icon-stop" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12"></rect></svg>
+            </button>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
