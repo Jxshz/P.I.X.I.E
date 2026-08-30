@@ -33,6 +33,7 @@ class PendingConfirmation:
     arguments_json: str
     created_at: float
     expires_at: float
+    session_id: Optional[str] = None
 
 class AgentCore:
     def __init__(
@@ -86,35 +87,40 @@ class AgentCore:
         try:
             stored_msgs = self.session_store.get_messages(self.session_id)
             for msg in stored_msgs:
-                role = msg.get("role")
-                content = msg.get("content", "")
-                tool_calls_json = msg.get("tool_calls_json")
+                try:
+                    role = msg.get("role")
+                    content = msg.get("content", "")
+                    tool_calls_json = msg.get("tool_calls_json")
 
-                if role == "user":
-                    self.conversation_history.append({"role": "user", "content": content})
-                elif role == "assistant":
-                    asst_msg = {"role": "assistant"}
-                    if content:
-                        asst_msg["content"] = content
-                    if tool_calls_json:
-                        try:
-                            asst_msg["tool_calls"] = json.loads(tool_calls_json)
-                        except Exception:
-                            pass
-                    self.conversation_history.append(asst_msg)
-                elif role == "tool":
-                    tool_msg = {"role": "tool", "content": content}
-                    if tool_calls_json:
-                        try:
-                            meta = json.loads(tool_calls_json)
-                            if isinstance(meta, dict):
-                                if "tool_call_id" in meta:
-                                    tool_msg["tool_call_id"] = meta["tool_call_id"]
-                                if "name" in meta:
-                                    tool_msg["name"] = meta["name"]
-                        except Exception:
-                            pass
-                    self.conversation_history.append(tool_msg)
+                    if role == "user":
+                        self.conversation_history.append({"role": "user", "content": content})
+                    elif role == "assistant":
+                        asst_msg = {"role": "assistant"}
+                        if content:
+                            asst_msg["content"] = content
+                        if tool_calls_json:
+                            try:
+                                parsed = json.loads(tool_calls_json)
+                                if isinstance(parsed, list):
+                                    asst_msg["tool_calls"] = parsed
+                            except Exception:
+                                pass
+                        self.conversation_history.append(asst_msg)
+                    elif role == "tool":
+                        tool_msg = {"role": "tool", "content": content}
+                        if tool_calls_json:
+                            try:
+                                meta = json.loads(tool_calls_json)
+                                if isinstance(meta, dict):
+                                    if "tool_call_id" in meta:
+                                        tool_msg["tool_call_id"] = meta["tool_call_id"]
+                                    if "name" in meta:
+                                        tool_msg["name"] = meta["name"]
+                            except Exception:
+                                pass
+                        self.conversation_history.append(tool_msg)
+                except Exception:
+                    continue
         except Exception:
             # Fallback cleanly to system prompt if session loading encounters errors
             self.conversation_history = [
@@ -186,10 +192,16 @@ class AgentCore:
         """
         async with self.context_lock:
             with self.confirmation_lock:
-                pending = self.pending_confirmations.pop(confirmation_id, None)
+                pending = self.pending_confirmations.get(confirmation_id)
+                if pending and pending.session_id and self.session_id and pending.session_id != self.session_id:
+                    # Cross-session execution rejection
+                    pending = None
+                else:
+                    if pending:
+                        self.pending_confirmations.pop(confirmation_id, None)
 
             if not pending:
-                # Replay, expired, or forged
+                # Replay, expired, cross-session, or forged
                 msg = "Confirmation failed: Unknown, expired, or already used confirmation ID."
                 self.conversation_history.append({"role": "assistant", "content": msg})
                 self._persist_message("assistant", msg)
@@ -361,7 +373,8 @@ class AgentCore:
                             tool_name=e.tool_name,
                             arguments_json=e.arguments_json,
                             created_at=time.time(),
-                            expires_at=time.time() + 300
+                            expires_at=time.time() + 300,
+                            session_id=self.session_id
                         )
                         with self.confirmation_lock:
                             self.pending_confirmations[conf_id] = pending
@@ -412,9 +425,14 @@ class AgentCore:
         return display_msg, spoken_msg, None
 
     def clear_context(self):
-        """Reset the conversation context and clear pending confirmations."""
+        """Reset the conversation context and clear pending confirmations for active session."""
         with self.confirmation_lock:
-            self.pending_confirmations.clear()
+            if self.session_id:
+                keys_to_remove = [k for k, v in self.pending_confirmations.items() if v.session_id == self.session_id]
+                for k in keys_to_remove:
+                    self.pending_confirmations.pop(k, None)
+            else:
+                self.pending_confirmations.clear()
         self.conversation_history = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
