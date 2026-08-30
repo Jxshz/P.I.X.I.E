@@ -77,7 +77,7 @@ def test_speech_cleanup_pixie_pronunciation():
 def test_speech_cleanup_mixed_markdown():
     text = "## Status\n\nP.I.X.I.E. is **online**.\n\n- Voice is ready\n- Backend is healthy"
     spoken = generate_spoken_response(text)
-    assert spoken == "Status Pixie is online. Voice is ready Backend is healthy"
+    assert spoken == "Status Pixie is online. Voice is ready, Backend is healthy."
 
 
 import time
