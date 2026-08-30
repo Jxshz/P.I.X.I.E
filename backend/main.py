@@ -297,5 +297,26 @@ def delete_session_endpoint(session_id: str):
     return {"status": "deleted", "session_id": session_id}
 
 
+class MessageResponse(BaseModel):
+    id: Optional[str] = None
+    session_id: str
+    role: str
+    content: str
+    tool_calls_json: Optional[str] = None
+    timestamp: float
+
+
+@app.get("/sessions/{session_id}/messages", response_model=List[MessageResponse])
+def get_session_messages_endpoint(session_id: str):
+    """
+    Retrieves stored messages for an existing session.
+    """
+    meta = session_manager.session_store.get_session(session_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Session not found")
+    messages = session_manager.session_store.get_messages(session_id)
+    return [MessageResponse(**m) for m in messages]
+
+
 if __name__ == "__main__":
     uvicorn.run("backend.main:app", host="127.0.1.1", port=8000, reload=True)

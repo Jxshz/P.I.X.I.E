@@ -186,6 +186,329 @@ function speakText(text) {
     }
 }
 
+let currentSessionId = null;
+
+const sidebarToggleBtn = document.getElementById('sidebar-toggle-btn');
+const chatHistoryBtn = document.getElementById('chat-history-btn');
+const sessionSidebar = document.getElementById('session-sidebar');
+const newChatBtn = document.getElementById('new-chat-btn');
+const sessionList = document.getElementById('session-list');
+
+// ==========================================
+// Session REST API Client & UI (Phase 5.3.2)
+// ==========================================
+
+async function fetchTokenTelemetry() {
+    const tokenValElem = document.getElementById('header-token-val');
+    if (!tokenValElem) return;
+    try {
+        const res = await fetch(`${API_BASE}/status`);
+        if (res.ok) {
+            const data = await res.json();
+            const used = data.tokens_day || 0;
+            const limit = data.tpd_limit || 0;
+            const formattedUsed = used >= 1000 ? (used / 1000).toFixed(1) + 'K' : used;
+            const formattedLimit = limit >= 1000 ? (limit / 1000).toFixed(0) + 'K' : limit;
+            tokenValElem.textContent = `${formattedUsed} / ${formattedLimit}`;
+        }
+    } catch (e) {
+        console.warn('Failed to fetch token telemetry:', e);
+    }
+}
+
+async function fetchSessions(limit = 50) {
+    const res = await fetch(`${API_BASE}/sessions?limit=${limit}`);
+    if (!res.ok) throw new Error(`Fetch sessions failed with status ${res.status}`);
+    return await res.json();
+}
+
+async function createSession(title = 'New Chat') {
+    const res = await fetch(`${API_BASE}/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title })
+    });
+    if (!res.ok) throw new Error(`Create session failed with status ${res.status}`);
+    return await res.json();
+}
+
+async function getSession(sessionId) {
+    const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}`);
+    if (!res.ok) throw new Error(`Get session failed with status ${res.status}`);
+    return await res.json();
+}
+
+async function deleteSession(sessionId) {
+    const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}`, {
+        method: 'DELETE'
+    });
+    if (!res.ok) throw new Error(`Delete session failed with status ${res.status}`);
+    return await res.json();
+}
+
+async function refreshSessionSidebar() {
+    try {
+        const sessions = await fetchSessions(50);
+        renderSessionList(sessions);
+    } catch (err) {
+        console.error('Error refreshing session sidebar:', err);
+    }
+}
+
+function renderSessionList(sessions) {
+    if (!sessionList) return;
+    sessionList.innerHTML = '';
+
+    if (!sessions || sessions.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.padding = '0.5rem';
+        empty.style.color = 'var(--text-muted)';
+        empty.style.fontSize = '0.8rem';
+        empty.textContent = 'No active chats.';
+        sessionList.appendChild(empty);
+        return;
+    }
+
+    sessions.forEach(s => {
+        const item = document.createElement('div');
+        item.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
+        item.setAttribute('role', 'listitem');
+        item.setAttribute('tabindex', '0');
+        item.setAttribute('aria-label', `Select chat ${s.title || 'Chat'}`);
+
+        const titleSpan = document.createElement('span');
+        titleSpan.className = 'session-title';
+        titleSpan.textContent = s.title || 'Chat';
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'session-delete-btn';
+        delBtn.setAttribute('aria-label', `Delete chat ${s.title || 'Chat'}`);
+        delBtn.setAttribute('title', 'Delete Chat');
+        delBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
+
+        delBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            await handleDeleteSession(s.id);
+        });
+
+        item.addEventListener('click', () => {
+            handleSelectSession(s.id);
+        });
+
+        item.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                handleSelectSession(s.id);
+            }
+        });
+
+        item.appendChild(titleSpan);
+        item.appendChild(delBtn);
+        sessionList.appendChild(item);
+    });
+}
+
+function getGreeting() {
+    const hour = new Date().getHours();
+    if (hour >= 5 && hour < 12) {
+        return "Good morning, Sir.";
+    } else if (hour >= 12 && hour < 17) {
+        return "Good afternoon, Sir.";
+    } else {
+        return "Good evening, Sir.";
+    }
+}
+
+const ACTIVE_SESSION_KEY = 'pixie_active_session_id';
+
+function getPersistedSessionId() {
+    try {
+        return localStorage.getItem(ACTIVE_SESSION_KEY);
+    } catch (e) {
+        return null;
+    }
+}
+
+function setPersistedSessionId(sessionId) {
+    try {
+        if (sessionId) {
+            localStorage.setItem(ACTIVE_SESSION_KEY, sessionId);
+        } else {
+            localStorage.removeItem(ACTIVE_SESSION_KEY);
+        }
+    } catch (e) {
+        console.warn('Failed to persist session ID to localStorage:', e);
+    }
+}
+
+async function loadSessionHistory(sessionId) {
+    if (!chatBox) return;
+    chatBox.innerHTML = '';
+    try {
+        const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/messages`);
+        if (res.ok) {
+            const messages = await res.json();
+            if (messages && messages.length > 0) {
+                messages.forEach(msg => {
+                    if (msg.role !== 'system') {
+                        appendMessage(msg.content, msg.role === 'user' ? 'user' : 'system');
+                    }
+                });
+                return;
+            }
+        }
+    } catch (err) {
+        console.warn(`Failed to fetch history for session ${sessionId}:`, err);
+    }
+    const welcomeDiv = document.createElement('div');
+    welcomeDiv.classList.add('message', 'system-msg');
+    welcomeDiv.innerHTML = `<div class="message-content">${getGreeting()}</div>`;
+    chatBox.appendChild(welcomeDiv);
+}
+
+async function handleSelectSession(sessionId) {
+    if (currentSessionId === sessionId) return;
+    currentSessionId = sessionId;
+    setPersistedSessionId(currentSessionId);
+    await loadSessionHistory(sessionId);
+    await refreshSessionSidebar();
+}
+
+async function handleCreateNewSession() {
+    try {
+        const newSession = await createSession('New Chat');
+        currentSessionId = newSession.id;
+        setPersistedSessionId(currentSessionId);
+        await loadSessionHistory(newSession.id);
+        await refreshSessionSidebar();
+    } catch (err) {
+        console.error('Error creating new session:', err);
+    }
+}
+
+async function handleDeleteSession(targetSessionId) {
+    try {
+        await deleteSession(targetSessionId);
+        const sessions = await fetchSessions(50);
+
+        if (currentSessionId === targetSessionId) {
+            if (sessions && sessions.length > 0) {
+                currentSessionId = sessions[0].id;
+                setPersistedSessionId(currentSessionId);
+                await loadSessionHistory(currentSessionId);
+            } else {
+                const newSession = await createSession('New Chat');
+                currentSessionId = newSession.id;
+                setPersistedSessionId(currentSessionId);
+                await loadSessionHistory(newSession.id);
+                const updatedSessions = await fetchSessions(50);
+                renderSessionList(updatedSessions);
+                return;
+            }
+        }
+        renderSessionList(sessions);
+    } catch (err) {
+        console.error('Error deleting session:', err);
+    }
+}
+
+async function initializeSession() {
+    const initialGreetingElem = document.getElementById('initial-greeting');
+    if (initialGreetingElem) {
+        initialGreetingElem.textContent = getGreeting();
+    }
+
+    let targetSessionId = currentSessionId || getPersistedSessionId();
+
+    if (targetSessionId) {
+        try {
+            const meta = await getSession(targetSessionId);
+            if (meta && meta.id) {
+                currentSessionId = meta.id;
+                setPersistedSessionId(currentSessionId);
+                await loadSessionHistory(currentSessionId);
+                await refreshSessionSidebar();
+                fetchTokenTelemetry();
+                return currentSessionId;
+            }
+        } catch (err) {
+            console.warn(`Persisted session ${targetSessionId} invalid or missing:`, err);
+            setPersistedSessionId(null);
+            currentSessionId = null;
+        }
+    }
+
+    try {
+        const sessions = await fetchSessions(50);
+        if (sessions && sessions.length > 0) {
+            currentSessionId = sessions[0].id;
+        } else {
+            const newSession = await createSession('New Chat');
+            currentSessionId = newSession.id;
+        }
+        setPersistedSessionId(currentSessionId);
+        await loadSessionHistory(currentSessionId);
+        await refreshSessionSidebar();
+        fetchTokenTelemetry();
+    } catch (err) {
+        console.error('Session initialization error:', err);
+        try {
+            const newSession = await createSession('New Chat');
+            currentSessionId = newSession.id;
+            setPersistedSessionId(currentSessionId);
+            await loadSessionHistory(currentSessionId);
+            await refreshSessionSidebar();
+            fetchTokenTelemetry();
+        } catch (createErr) {
+            console.error('Failed to create fallback session:', createErr);
+        }
+    }
+    return currentSessionId;
+}
+
+async function ensureActiveSession() {
+    if (currentSessionId) {
+        try {
+            const meta = await getSession(currentSessionId);
+            if (meta && meta.id) return currentSessionId;
+        } catch (err) {
+            console.warn(`Active session ${currentSessionId} invalid or missing:`, err);
+            currentSessionId = null;
+        }
+    }
+    return await initializeSession();
+}
+
+// Event Listeners for Sidebar Controls & Header Controls
+const closeSidebarBtn = document.getElementById('close-sidebar-btn');
+
+if (sidebarToggleBtn && sessionSidebar) {
+    sidebarToggleBtn.addEventListener('click', () => {
+        sessionSidebar.classList.toggle('hidden');
+    });
+}
+if (chatHistoryBtn && sessionSidebar) {
+    chatHistoryBtn.addEventListener('click', () => {
+        sessionSidebar.classList.toggle('hidden');
+    });
+}
+if (closeSidebarBtn && sessionSidebar) {
+    closeSidebarBtn.addEventListener('click', () => {
+        sessionSidebar.classList.add('hidden');
+    });
+}
+if (newChatBtn) {
+    newChatBtn.addEventListener('click', () => {
+        handleCreateNewSession();
+    });
+}
+
+// Auto-initialize session on script load
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => { initializeSession(); });
+} else {
+    initializeSession();
+}
+
 function appendConfirmationCard(actionRequired) {
     const msgDiv = document.createElement('div');
     msgDiv.classList.add('message', 'system-msg');
@@ -236,12 +559,14 @@ function appendConfirmationCard(actionRequired) {
         setStatus('PROCESSING');
 
         try {
+            await ensureActiveSession();
             const response = await fetch(`${API_BASE}/confirm`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     confirmation_id: actionRequired.confirmation_id,
-                    approved: approved
+                    approved: approved,
+                    session_id: currentSessionId
                 })
             });
 
@@ -304,12 +629,16 @@ async function sendMessage(isVoice = false) {
     const endpoint = isVoice ? '/voice' : '/chat';
 
     try {
+        await ensureActiveSession();
         const response = await fetch(`${API_BASE}${endpoint}`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ message: text })
+            body: JSON.stringify({
+                message: text,
+                session_id: currentSessionId
+            })
         });
 
         if (!response.ok) {
