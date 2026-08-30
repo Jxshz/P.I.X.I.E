@@ -10,6 +10,7 @@ from groq import AsyncGroq
 from dotenv import load_dotenv
 from backend.agent.personality import SYSTEM_PROMPT, generate_spoken_response, format_display_response
 from backend.agent.token_governor import TokenGovernor
+from backend.storage.session_store import SessionStore
 from backend.storage.usage_store import UsageStore
 from backend.tools import ToolRegistry, SystemDiagnosticsTool
 from backend.tools.registry import ConfirmationRequiredException
@@ -34,7 +35,12 @@ class PendingConfirmation:
     expires_at: float
 
 class AgentCore:
-    def __init__(self, db_path: str = None):
+    def __init__(
+        self,
+        db_path: Optional[str] = None,
+        session_store: Optional[SessionStore] = None,
+        session_id: Optional[str] = None
+    ):
         # AsyncGroq automatically picks up GROQ_API_KEY from env
         self.client = AsyncGroq()
         # Use model from environment, fallback to the confirmed working model
@@ -44,6 +50,20 @@ class AgentCore:
         self.usage_store = UsageStore(db_path=db_path)
         self.tool_registry = ToolRegistry()
 
+        # SessionStore integration (Phase 5.1.2)
+        self.session_store = session_store
+        self.session_id = session_id
+
+        if self.session_store:
+            if self.session_id:
+                # Ensure session exists in SessionStore
+                if not self.session_store.get_session(self.session_id):
+                    self.session_store.create_session(session_id=self.session_id)
+            else:
+                # Create a default session
+                session = self.session_store.create_session()
+                self.session_id = session["id"]
+
         # State for confirmation flow
         self.require_confirmation = True
         self.pending_confirmations: Dict[str, PendingConfirmation] = {}
@@ -52,10 +72,69 @@ class AgentCore:
         # Register core tools
         self.tool_registry.register(SystemDiagnosticsTool())
 
-        # The initial context
+        # Load context from SessionStore or initialize default
+        self._load_history_from_session_store()
+
+    def _load_history_from_session_store(self):
+        """Loads persisted messages from session_store for session_id."""
         self.conversation_history = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
+        if not self.session_store or not self.session_id:
+            return
+
+        try:
+            stored_msgs = self.session_store.get_messages(self.session_id)
+            for msg in stored_msgs:
+                role = msg.get("role")
+                content = msg.get("content", "")
+                tool_calls_json = msg.get("tool_calls_json")
+
+                if role == "user":
+                    self.conversation_history.append({"role": "user", "content": content})
+                elif role == "assistant":
+                    asst_msg = {"role": "assistant"}
+                    if content:
+                        asst_msg["content"] = content
+                    if tool_calls_json:
+                        try:
+                            asst_msg["tool_calls"] = json.loads(tool_calls_json)
+                        except Exception:
+                            pass
+                    self.conversation_history.append(asst_msg)
+                elif role == "tool":
+                    tool_msg = {"role": "tool", "content": content}
+                    if tool_calls_json:
+                        try:
+                            meta = json.loads(tool_calls_json)
+                            if isinstance(meta, dict):
+                                if "tool_call_id" in meta:
+                                    tool_msg["tool_call_id"] = meta["tool_call_id"]
+                                if "name" in meta:
+                                    tool_msg["name"] = meta["name"]
+                        except Exception:
+                            pass
+                    self.conversation_history.append(tool_msg)
+        except Exception:
+            # Fallback cleanly to system prompt if session loading encounters errors
+            self.conversation_history = [
+                {"role": "system", "content": SYSTEM_PROMPT}
+            ]
+
+    def _persist_message(self, role: str, content: str, tool_calls_json: Optional[str] = None):
+        """Helper to persist a message to session_store safely."""
+        if not self.session_store or not self.session_id:
+            return
+        try:
+            self.session_store.add_message(
+                session_id=self.session_id,
+                role=role,
+                content=content,
+                tool_calls_json=tool_calls_json
+            )
+        except Exception:
+            # Persistence failures must not corrupt in-memory history or crash flow
+            pass
 
     @property
     def context_lock(self):
@@ -113,6 +192,7 @@ class AgentCore:
                 # Replay, expired, or forged
                 msg = "Confirmation failed: Unknown, expired, or already used confirmation ID."
                 self.conversation_history.append({"role": "assistant", "content": msg})
+                self._persist_message("assistant", msg)
                 display_msg = format_display_response(msg)
                 spoken_msg = generate_spoken_response(msg)
                 return display_msg, spoken_msg, None
@@ -149,6 +229,9 @@ class AgentCore:
                     "content": tool_result_str
                 })
 
+            tool_meta = json.dumps({"tool_call_id": pending.tool_call_id, "name": pending.tool_name})
+            self._persist_message("tool", tool_result_str, tool_calls_json=tool_meta)
+
             return await self._resume_loop()
 
     async def process_intent(self, user_input: str) -> Tuple[str, str, Optional[Dict[str, Any]]]:
@@ -157,6 +240,7 @@ class AgentCore:
         """
         async with self.context_lock:
             self.conversation_history.append({"role": "user", "content": user_input})
+            self._persist_message("user", user_input)
             return await self._resume_loop()
 
     async def _resume_loop(self) -> Tuple[str, str, Optional[Dict[str, Any]]]:
@@ -174,6 +258,7 @@ class AgentCore:
                     self.conversation_history.pop()
                 msg = "Sir, my token governor is currently experiencing issues. Please try again in a moment."
                 self.conversation_history.append({"role": "assistant", "content": msg})
+                self._persist_message("assistant", msg)
                 display_msg = format_display_response(msg)
                 spoken_msg = generate_spoken_response(msg)
                 return display_msg, spoken_msg, None
@@ -228,6 +313,8 @@ class AgentCore:
                     ]
 
                 self.conversation_history.append(assistant_msg)
+                tc_json = json.dumps(assistant_msg["tool_calls"]) if "tool_calls" in assistant_msg else None
+                self._persist_message("assistant", assistant_msg.get("content", ""), tool_calls_json=tc_json)
 
                 # If there are no tool calls, the model has given its final response
                 if not message.tool_calls:
@@ -245,12 +332,15 @@ class AgentCore:
                     arguments = tc.function.arguments
 
                     if skip_remaining:
+                        skipped_str = json.dumps({"error": "Execution skipped: waiting on prior confirmation."})
                         self.conversation_history.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "name": name,
-                            "content": json.dumps({"error": "Execution skipped: waiting on prior confirmation."})
+                            "content": skipped_str
                         })
+                        tool_meta = json.dumps({"tool_call_id": tc.id, "name": name})
+                        self._persist_message("tool", skipped_str, tool_calls_json=tool_meta)
                         continue
 
                     try:
@@ -261,6 +351,8 @@ class AgentCore:
                             "name": name,
                             "content": tool_result_str
                         })
+                        tool_meta = json.dumps({"tool_call_id": tc.id, "name": name})
+                        self._persist_message("tool", tool_result_str, tool_calls_json=tool_meta)
                     except ConfirmationRequiredException as e:
                         conf_id = secrets.token_hex(16)
                         pending = PendingConfirmation(
@@ -274,12 +366,15 @@ class AgentCore:
                         with self.confirmation_lock:
                             self.pending_confirmations[conf_id] = pending
 
+                        placeholder_str = f"[PENDING_CONFIRMATION_{conf_id}]"
                         self.conversation_history.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "name": name,
-                            "content": f"[PENDING_CONFIRMATION_{conf_id}]"
+                            "content": placeholder_str
                         })
+                        tool_meta = json.dumps({"tool_call_id": tc.id, "name": name})
+                        self._persist_message("tool", placeholder_str, tool_calls_json=tool_meta)
                         skip_remaining = True
                         pending_conf = pending
 
@@ -303,6 +398,7 @@ class AgentCore:
                 self.governor.record_usage(reservation, failed=True)
                 error_msg = f"Error connecting to Groq API: {str(e)}"
                 self.conversation_history.append({"role": "assistant", "content": error_msg})
+                self._persist_message("assistant", error_msg)
                 display_msg = format_display_response(error_msg)
                 spoken_msg = generate_spoken_response(error_msg)
                 return display_msg, spoken_msg, None
@@ -310,6 +406,7 @@ class AgentCore:
         # If we exceed max iterations without returning
         msg = "I encountered an issue processing the tool results, taking too many steps."
         self.conversation_history.append({"role": "assistant", "content": msg})
+        self._persist_message("assistant", msg)
         display_msg = format_display_response(msg)
         spoken_msg = generate_spoken_response(msg)
         return display_msg, spoken_msg, None
@@ -321,6 +418,12 @@ class AgentCore:
         self.conversation_history = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
+        if self.session_store and self.session_id:
+            try:
+                self.session_store.delete_session(self.session_id)
+                self.session_store.create_session(session_id=self.session_id)
+            except Exception:
+                pass
 
     def get_status(self) -> Dict[str, Any]:
         """Returns the current status of the Token Governor."""
