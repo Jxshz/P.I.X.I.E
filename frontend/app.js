@@ -186,6 +186,101 @@ function speakText(text) {
     }
 }
 
+function appendConfirmationCard(actionRequired) {
+    const msgDiv = document.createElement('div');
+    msgDiv.classList.add('message', 'system-msg');
+
+    const contentDiv = document.createElement('div');
+    contentDiv.classList.add('message-content', 'confirmation-card');
+
+    const header = document.createElement('p');
+    header.textContent = `P.I.X.I.E. wants to execute: ${actionRequired.tool_name}`;
+    header.style.fontWeight = 'bold';
+
+    const params = document.createElement('pre');
+    params.textContent = `Parameters:\n${JSON.stringify(actionRequired.arguments, null, 2)}`;
+    params.style.background = 'rgba(0,0,0,0.2)';
+    params.style.padding = '10px';
+    params.style.borderRadius = '5px';
+    params.style.marginTop = '10px';
+    params.style.whiteSpace = 'pre-wrap';
+    params.style.fontFamily = 'monospace';
+
+    const btnContainer = document.createElement('div');
+    btnContainer.classList.add('confirmation-buttons');
+    btnContainer.style.marginTop = '15px';
+
+    const allowBtn = document.createElement('button');
+    allowBtn.textContent = 'Allow';
+    allowBtn.classList.add('action-btn');
+
+    const rejectBtn = document.createElement('button');
+    rejectBtn.textContent = 'Reject';
+    rejectBtn.classList.add('action-btn', 'danger-btn');
+
+    btnContainer.appendChild(allowBtn);
+    btnContainer.appendChild(rejectBtn);
+
+    contentDiv.appendChild(header);
+    contentDiv.appendChild(params);
+    contentDiv.appendChild(btnContainer);
+    msgDiv.appendChild(contentDiv);
+    chatBox.appendChild(msgDiv);
+    chatBox.scrollTop = chatBox.scrollHeight;
+
+    const handleConfirm = async (approved) => {
+        allowBtn.disabled = true;
+        rejectBtn.disabled = true;
+        userInput.disabled = true;
+        sendBtn.disabled = true;
+        setStatus('PROCESSING');
+
+        try {
+            const response = await fetch(`${API_BASE}/confirm`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    confirmation_id: actionRequired.confirmation_id,
+                    approved: approved
+                })
+            });
+
+            if (!response.ok) {
+                if (response.status === 429) {
+                    const data = await response.json();
+                    appendMessage(data.response, 'system');
+                    const textToSpeak = data.spoken_response ? data.spoken_response : data.response;
+                    speakText(textToSpeak);
+                    return;
+                }
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            appendMessage(data.response, 'system');
+
+            if (data.action_required) {
+                appendConfirmationCard(data.action_required);
+            }
+
+            const textToSpeak = data.spoken_response ? data.spoken_response : data.response;
+            speakText(textToSpeak);
+        } catch (error) {
+            console.error('Error in confirmation:', error);
+            setStatus('ERROR');
+            appendMessage('Error: Confirmation request failed.', 'system');
+            setTimeout(() => setStatus('IDLE'), 2000);
+        } finally {
+            userInput.disabled = false;
+            sendBtn.disabled = false;
+            userInput.focus();
+        }
+    };
+
+    allowBtn.addEventListener('click', () => handleConfirm(true));
+    rejectBtn.addEventListener('click', () => handleConfirm(false));
+}
+
 async function sendMessage(isVoice = false) {
     const text = userInput.value.trim();
     if (!text) return;
@@ -230,6 +325,11 @@ async function sendMessage(isVoice = false) {
 
         const data = await response.json();
         appendMessage(data.response, 'system');
+
+        if (data.action_required) {
+            appendConfirmationCard(data.action_required);
+        }
+
         const textToSpeak = data.spoken_response ? data.spoken_response : data.response;
         speakText(textToSpeak); // This transitions to SPEAKING and then IDLE
     } catch (error) {

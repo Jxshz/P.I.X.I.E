@@ -21,8 +21,8 @@ def test_chat_endpoint_structure():
 
 @pytest.fixture
 def mock_agent(monkeypatch):
-    async def mock_process_intent(self, message: str) -> tuple[str, str]:
-        return "Mocked response", "Mocked spoken"
+    async def mock_process_intent(self, message: str) -> tuple[str, str, dict | None]:
+        return "Mocked response", "Mocked spoken", None
 
     from backend.agent.core import AgentCore
     monkeypatch.setattr(AgentCore, "process_intent", mock_process_intent)
@@ -263,7 +263,7 @@ async def test_failed_groq_releases_reservation():
 
     core.client.chat.completions = MockCreateError()
 
-    resp, spoken = await core.process_intent("Hello")
+    resp, spoken, _ = await core.process_intent("Hello")
     assert "Error connecting" in resp
 
     # Check that reservation is released (usage should be 0)
@@ -319,7 +319,7 @@ async def test_governor_failure_fails_closed():
 
     core.governor.preflight = failing_preflight
 
-    resp, spoken = await core.process_intent("Hello")
+    resp, spoken, _ = await core.process_intent("Hello")
     assert "experiencing issues" in resp
 
 

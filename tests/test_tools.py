@@ -101,10 +101,9 @@ def test_confirm_required_tool_execution():
     registry.require_confirmation = True
     registry.register(DummyConfirmTool())
     
-    result = registry.execute_tool("dummy_confirm", "{}")
-    data = json.loads(result)
-    assert "error" in data
-    assert "confirmation is required" in data["error"].lower()
+    from backend.tools.registry import ConfirmationRequiredException
+    with pytest.raises(ConfirmationRequiredException):
+        registry.execute_tool("dummy_confirm", "{}")
     
     # Test bypass when REQUIRE_CONFIRMATION is false
     registry.require_confirmation = False

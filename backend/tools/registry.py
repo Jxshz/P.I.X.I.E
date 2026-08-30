@@ -8,6 +8,14 @@ class ToolExecutionError(Exception):
     """Raised when a tool fails to execute safely."""
     pass
 
+class ConfirmationRequiredException(Exception):
+    """Raised when a tool requires explicit user confirmation before executing."""
+    def __init__(self, tool_call_id: str, tool_name: str, arguments_json: str):
+        self.tool_call_id = tool_call_id
+        self.tool_name = tool_name
+        self.arguments_json = arguments_json
+        super().__init__(f"Confirmation required for tool '{tool_name}'")
+
 class ToolRegistry:
     """
     Manages registration, validation, and safe execution of tools.
@@ -46,7 +54,7 @@ class ToolRegistry:
             })
         return schemas
         
-    def execute_tool(self, name: str, arguments_json: str) -> str:
+    def execute_tool(self, name: str, arguments_json: str, tool_call_id: str = "test_call", is_confirmed: bool = False) -> str:
         """
         Safely executes a tool by name.
         Catches exceptions and validates permissions.
@@ -61,9 +69,8 @@ class ToolRegistry:
         if tool.permission == PermissionLevel.SAFE:
             pass
         elif tool.permission == PermissionLevel.CONFIRM_REQUIRED:
-            if self.require_confirmation:
-                # In Phase 3, we simply return a "Confirmation Required" error to fail closed.
-                return json.dumps({"error": "Execution paused: User confirmation is required."})
+            if self.require_confirmation and not is_confirmed:
+                raise ConfirmationRequiredException(tool_call_id, name, arguments_json)
         elif tool.permission == PermissionLevel.PRIVILEGED:
             return json.dumps({"error": "Execution denied: Missing privileged access."})
         elif tool.permission == PermissionLevel.PROHIBITED:

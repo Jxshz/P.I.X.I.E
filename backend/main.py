@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional, Dict, Any
 from backend.agent.core import AgentCore, RateLimitException
 
 app = FastAPI(title="P.I.X.I.E. Backend", version="0.1.0")
@@ -20,9 +21,19 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
 
+class ActionRequest(BaseModel):
+    confirmation_id: str
+    tool_name: str
+    arguments: Dict[str, Any]
+
 class ChatResponse(BaseModel):
     response: str
     spoken_response: str | None = None
+    action_required: ActionRequest | None = None
+
+class ConfirmRequest(BaseModel):
+    confirmation_id: str
+    approved: bool
 
 @app.get("/health")
 def health_check():
@@ -34,8 +45,12 @@ async def chat_endpoint(request: ChatRequest):
     Receives user input from the frontend and processes it via the Agent Core.
     """
     try:
-        response_text, spoken_response = await agent.process_intent(request.message)
-        return ChatResponse(response=response_text, spoken_response=spoken_response)
+        response_text, spoken_response, action_required = await agent.process_intent(request.message)
+        return ChatResponse(
+            response=response_text,
+            spoken_response=spoken_response,
+            action_required=ActionRequest(**action_required) if action_required else None
+        )
     except RateLimitException as e:
         return JSONResponse(
             status_code=429,
@@ -48,8 +63,33 @@ async def voice_endpoint(request: ChatRequest):
     Receives voice transcript and processes it.
     """
     try:
-        response_text, spoken_response = await agent.process_intent(request.message)
-        return ChatResponse(response=response_text, spoken_response=spoken_response)
+        response_text, spoken_response, action_required = await agent.process_intent(request.message)
+        return ChatResponse(
+            response=response_text,
+            spoken_response=spoken_response,
+            action_required=ActionRequest(**action_required) if action_required else None
+        )
+    except RateLimitException as e:
+        return JSONResponse(
+            status_code=429,
+            content={"response": e.message, "spoken_response": e.message}
+        )
+
+@app.post("/confirm", response_model=ChatResponse)
+async def confirm_endpoint(request: ConfirmRequest):
+    """
+    Handles user confirmation for pending tool executions.
+    """
+    try:
+        response_text, spoken_response, action_required = await agent.handle_confirmation(
+            request.confirmation_id,
+            request.approved
+        )
+        return ChatResponse(
+            response=response_text,
+            spoken_response=spoken_response,
+            action_required=ActionRequest(**action_required) if action_required else None
+        )
     except RateLimitException as e:
         return JSONResponse(
             status_code=429,

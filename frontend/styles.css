@@ -137,6 +137,42 @@ body {
     text-align: right;
 }
 
+/* Confirmation Card */
+.confirmation-card {
+    background: var(--surface-soft);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-top: 1rem;
+}
+
+.confirmation-buttons {
+    display: flex;
+    gap: 1rem;
+}
+
+.confirmation-card .action-btn {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.5rem 1rem;
+}
+
+.confirmation-card .danger-btn {
+    color: var(--danger);
+    border-color: rgba(239, 68, 68, 0.3);
+}
+
+.confirmation-card .danger-btn:hover {
+    color: white;
+    background-color: var(--danger);
+    border-color: var(--danger);
+}
+
+.confirmation-card .action-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 /* 7. Input */
 .input-container {
     padding: 1.5rem 2rem;

@@ -46,7 +46,7 @@ async def test_max_iterations_exhaustion(agent, monkeypatch):
     agent.governor.record_usage = lambda res, usage=None, failed=False: None
     
     # Run the loop
-    res_text, res_spoken = await agent.process_intent("Hello")
+    res_text, res_spoken, _ = await agent.process_intent("Hello")
     
     # Expected error message from max exhaustion
     expected_error = "I encountered an issue processing the tool results, taking too many steps."
@@ -63,7 +63,7 @@ async def test_max_iterations_exhaustion(agent, monkeypatch):
     assert error_count == 1
     
     # Next-turn integrity verification
-    res_text2, _ = await agent.process_intent("Next message")
+    res_text2, _, _ = await agent.process_intent("Next message")
     assert res_text2 == expected_error # Still loops endlessly with our mock
     
     # Check that previous error wasn't popped or mangled incorrectly
@@ -90,7 +90,7 @@ async def test_api_exception(agent, monkeypatch):
 
     agent.client = MockClient()
 
-    res_text, res_spoken = await agent.process_intent("Hello")
+    res_text, res_spoken, _ = await agent.process_intent("Hello")
     
     expected_error = "Error connecting to Groq API: Simulated API failure"
     assert res_text == expected_error
@@ -103,7 +103,7 @@ async def test_api_exception(agent, monkeypatch):
     assert error_count == 1
     
     # Next turn verification
-    res_text2, _ = await agent.process_intent("Hello again")
+    res_text2, _, _ = await agent.process_intent("Hello again")
     assert res_text2 == expected_error
     assert agent.conversation_history[-1]["role"] == "assistant"
     assert agent.conversation_history[-1]["content"] == expected_error
@@ -136,7 +136,7 @@ async def test_normal_completion(agent, monkeypatch):
 
     agent.client = MockClient()
 
-    res_text, res_spoken = await agent.process_intent("Hello")
+    res_text, res_spoken, _ = await agent.process_intent("Hello")
     assert res_text == "Normal response"
     
     last_message = agent.conversation_history[-1]
@@ -196,7 +196,7 @@ async def test_normal_tool_completion(agent, monkeypatch):
 
     agent.client = MockClient()
 
-    res_text, res_spoken = await agent.process_intent("Hello")
+    res_text, res_spoken, _ = await agent.process_intent("Hello")
     assert res_text == "Final response"
     
     # System -> User -> Assistant(TC) -> Tool -> Assistant(Final)
@@ -266,7 +266,7 @@ async def test_context_trimming_with_tools(agent, monkeypatch):
     agent.client = MockClient()
 
     # The next process_intent should trigger a trim
-    res_text, _ = await agent.process_intent("U" * 100)
+    res_text, _, _ = await agent.process_intent("U" * 100)
     assert res_text == "Final answer"
     
     # Verify no dangling tools
