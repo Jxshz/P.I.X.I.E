@@ -51,7 +51,7 @@ def set_mock_response(client_instance, text: str):
     client_instance._custom_response = text
 
 
-# 1. Active session key exists in app.js
+# 1. Active-session persistence key is configured correctly
 def test_1_active_session_key_configured():
     with open("frontend/app.js", "r") as f:
         js = f.read()
@@ -60,8 +60,17 @@ def test_1_active_session_key_configured():
     assert "setPersistedSessionId" in js
 
 
-# 2. Persisted active session validation via REST API
-def test_2_persisted_session_validation(client):
+# 2. Persisted session ID is read during startup
+def test_2_persisted_session_read_during_startup():
+    with open("frontend/app.js", "r") as f:
+        js = f.read()
+    assert "getPersistedSessionId()" in js
+    assert "initializeSession()" in js
+    assert "let targetSessionId = currentSessionId || getPersistedSessionId();" in js
+
+
+# 3. Persisted valid session ID is verified against backend
+def test_3_persisted_valid_session_verified(client):
     s1 = client.post("/sessions", json={"title": "Persisted Chat"}).json()
     sid = s1["id"]
 
@@ -70,15 +79,8 @@ def test_2_persisted_session_validation(client):
     assert res.json()["id"] == sid
 
 
-# 3. Invalid persisted session ID fallback
-def test_3_invalid_persisted_session_fallback(client):
-    res = client.get("/sessions/invalid_session_12345")
-    assert res.status_code == 404
-    assert res.json()["detail"] == "Session not found"
-
-
-# 4. Valid session restoration and history loading
-def test_4_valid_session_restoration_and_history(client, mock_groq):
+# 4. Valid persisted session restores the correct session & loads history
+def test_4_valid_session_restores_history(client, mock_groq):
     s = client.post("/sessions", json={"title": "Restored Session"}).json()
     sid = s["id"]
 
@@ -91,8 +93,30 @@ def test_4_valid_session_restoration_and_history(client, mock_groq):
     assert any(m["content"] == "Hello Restored" for m in msgs)
 
 
-# 5. New Chat creates backend session and updates active session
-def test_5_new_chat_creates_session_and_updates_active(client):
+# 5. Invalid/deleted persisted session falls back safely
+def test_5_invalid_persisted_session_fallback(client):
+    res = client.get("/sessions/invalid_session_12345")
+    assert res.status_code == 404
+    assert res.json()["detail"] == "Session not found"
+
+
+# 6. Missing persisted session falls back safely
+def test_6_missing_persisted_session_fallback(client):
+    # When no session ID is persisted, GET /sessions retrieves available sessions or creates default
+    sessions = client.get("/sessions").json()
+    assert isinstance(sessions, list)
+
+
+# 7. Session switching updates persisted active-session ID
+def test_7_session_switching_updates_persisted_id():
+    with open("frontend/app.js", "r") as f:
+        js = f.read()
+    assert "handleSelectSession" in js
+    assert "setPersistedSessionId(currentSessionId);" in js
+
+
+# 8. Creating a new chat updates persisted active-session ID
+def test_8_new_chat_updates_persisted_id(client):
     res = client.post("/sessions", json={"title": "New Chat"})
     assert res.status_code == 201
     new_id = res.json()["id"]
@@ -101,26 +125,8 @@ def test_5_new_chat_creates_session_and_updates_active(client):
     assert meta["id"] == new_id
 
 
-# 6. Session selection switches active session and loads correct history
-def test_6_session_switching_loads_correct_history(client, mock_groq):
-    s1 = client.post("/sessions", json={"title": "S1"}).json()["id"]
-    s2 = client.post("/sessions", json={"title": "S2"}).json()["id"]
-
-    client.post("/chat", json={"message": "Msg in S1", "session_id": s1})
-    client.post("/chat", json={"message": "Msg in S2", "session_id": s2})
-
-    msgs_s1 = client.get(f"/sessions/{s1}/messages").json()
-    msgs_s2 = client.get(f"/sessions/{s2}/messages").json()
-
-    assert any(m["content"] == "Msg in S1" for m in msgs_s1)
-    assert not any("Msg in S2" in m["content"] for m in msgs_s1)
-
-    assert any(m["content"] == "Msg in S2" for m in msgs_s2)
-    assert not any("Msg in S1" in m["content"] for m in msgs_s2)
-
-
-# 7. Session deletion selects valid replacement session
-def test_7_session_deletion_selects_replacement(client):
+# 9. Deleting the active session updates persisted active-session ID
+def test_9_deleting_active_session_updates_persisted_id(client):
     s1 = client.post("/sessions", json={"title": "S1"}).json()["id"]
     s2 = client.post("/sessions", json={"title": "S2"}).json()["id"]
 
@@ -130,30 +136,40 @@ def test_7_session_deletion_selects_replacement(client):
     assert sessions[0]["id"] == s1
 
 
-# 8. Deleting final session creates a valid replacement
-def test_8_deleting_final_session_creates_replacement(client):
+# 10. Deleting the final session creates/selects a valid replacement
+def test_10_deleting_final_session_creates_replacement(client):
     s1 = client.post("/sessions", json={"title": "Sole Session"}).json()["id"]
     client.delete(f"/sessions/{s1}")
 
-    # Client code creates a replacement session when 0 sessions remain
     new_s = client.post("/sessions", json={"title": "New Chat"}).json()
     assert new_s["id"] is not None
     assert new_s["id"] != s1
 
 
-# 9. Session A history never leaks into Session B
-def test_9_session_isolation_guarantee(client, mock_groq):
-    sa = client.post("/sessions", json={"title": "Isolated A"}).json()["id"]
-    sb = client.post("/sessions", json={"title": "Isolated B"}).json()["id"]
+# 11. Only the session ID is persisted — no conversation data
+def test_11_only_session_id_persisted_no_conversation():
+    with open("frontend/app.js", "r") as f:
+        js = f.read()
 
-    client.post("/chat", json={"message": "Secret Payload A", "session_id": sa})
+    assert "pixie_active_session_id" in js
+    assert "localStorage.setItem('messages'" not in js
+    assert "localStorage.setItem('history'" not in js
+    assert "localStorage.setItem('tokens'" not in js
+    assert "localStorage.setItem('conversation'" not in js
 
-    msgs_b = client.get(f"/sessions/{sb}/messages").json()
-    assert len(msgs_b) == 0
+
+# 12. Conversation history is never stored in browser persistence
+def test_12_no_forbidden_browser_storage():
+    with open("frontend/app.js", "r") as f:
+        js = f.read()
+
+    assert "sessionStorage" not in js
+    assert "indexedDB" not in js
+    assert "document.cookie" not in js
 
 
-# 10. Chat, voice, confirm requests bound to active session
-def test_10_requests_bound_to_active_session(client, mock_groq):
+# 13. Session requests remain bound to the restored/active session
+def test_13_requests_bound_to_active_session(client, mock_groq):
     s = client.post("/sessions", json={"title": "Bound Session"}).json()["id"]
 
     chat_res = client.post("/chat", json={"message": "Chat msg", "session_id": s})
@@ -166,23 +182,19 @@ def test_10_requests_bound_to_active_session(client, mock_groq):
     assert confirm_res.status_code == 200
 
 
-# 11. Strict persistence boundary: ONLY pixie_active_session_id in localStorage
-def test_11_strict_persistence_boundary():
-    with open("frontend/app.js", "r") as f:
-        js = f.read()
+# 14. Session history remains isolated after persistence/restoration
+def test_14_session_history_isolated_after_restoration(client, mock_groq):
+    sa = client.post("/sessions", json={"title": "Isolated A"}).json()["id"]
+    sb = client.post("/sessions", json={"title": "Isolated B"}).json()["id"]
 
-    assert "pixie_active_session_id" in js
-    assert "localStorage.setItem('messages'" not in js
-    assert "localStorage.setItem('history'" not in js
-    assert "localStorage.setItem('tokens'" not in js
-    assert "localStorage.setItem('conversation'" not in js
-    assert "sessionStorage" not in js
-    assert "indexedDB" not in js
-    assert "document.cookie" not in js
+    client.post("/chat", json={"message": "Secret Payload A", "session_id": sa})
+
+    msgs_b = client.get(f"/sessions/{sb}/messages").json()
+    assert len(msgs_b) == 0
 
 
-# 12. Context-aware greeting retained
-def test_12_context_aware_greeting():
+# 15. Context-aware greeting retained (no generic chatbot welcome)
+def test_15_context_aware_greeting_retained():
     with open("frontend/app.js", "r") as f:
         js = f.read()
     assert "getGreeting" in js
