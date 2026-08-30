@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 from groq import AsyncGroq
 from dotenv import load_dotenv
-from backend.agent.personality import SYSTEM_PROMPT, generate_spoken_response
+from backend.agent.personality import SYSTEM_PROMPT, generate_spoken_response, format_display_response
 from backend.agent.token_governor import TokenGovernor
 from backend.storage.usage_store import UsageStore
 from backend.tools import ToolRegistry, SystemDiagnosticsTool
@@ -102,7 +102,9 @@ class AgentCore:
                 # Replay, expired, or forged
                 msg = "Confirmation failed: Unknown, expired, or already used confirmation ID."
                 self.conversation_history.append({"role": "assistant", "content": msg})
-                return msg, msg, None
+                display_msg = format_display_response(msg)
+                spoken_msg = generate_spoken_response(msg)
+                return display_msg, spoken_msg, None
 
             placeholder = f"[PENDING_CONFIRMATION_{confirmation_id}]"
 
@@ -157,14 +159,16 @@ class AgentCore:
                 self._trim_context()
                 is_allowed, error_msg, reservation = self.governor.preflight(self.conversation_history)
             except Exception as e:
-                if iteration == 0:
+                if iteration == 0 and len(self.conversation_history) > 1:
                     self.conversation_history.pop()
                 msg = "Sir, my token governor is currently experiencing issues. Please try again in a moment."
                 self.conversation_history.append({"role": "assistant", "content": msg})
-                return msg, msg, None
+                display_msg = format_display_response(msg)
+                spoken_msg = generate_spoken_response(msg)
+                return display_msg, spoken_msg, None
 
             if not is_allowed:
-                if iteration == 0:
+                if iteration == 0 and len(self.conversation_history) > 1:
                     self.conversation_history.pop()
                 self.usage_store.record_rate_limit(self.model)
                 raise RateLimitException(error_msg)
@@ -217,8 +221,9 @@ class AgentCore:
                 # If there are no tool calls, the model has given its final response
                 if not message.tool_calls:
                     content = message.content or ""
+                    display_response = format_display_response(content)
                     spoken_response = generate_spoken_response(content)
-                    return content, spoken_response, None
+                    return display_response, spoken_response, None
 
                 # We have tool calls, process them and continue the loop
                 skip_remaining = False
@@ -279,22 +284,29 @@ class AgentCore:
                         "arguments": parsed_args
                     }
                     msg = f"I need your confirmation to execute the tool '{pending_conf.tool_name}'."
+                    display_response = format_display_response(msg)
                     spoken_response = generate_spoken_response(msg)
-                    return msg, spoken_response, action_required
+                    return display_response, spoken_response, action_required
 
             except Exception as e:
                 self.governor.record_usage(reservation, failed=True)
                 error_msg = f"Error connecting to Groq API: {str(e)}"
                 self.conversation_history.append({"role": "assistant", "content": error_msg})
-                return error_msg, error_msg, None
+                display_msg = format_display_response(error_msg)
+                spoken_msg = generate_spoken_response(error_msg)
+                return display_msg, spoken_msg, None
 
         # If we exceed max iterations without returning
         msg = "I encountered an issue processing the tool results, taking too many steps."
         self.conversation_history.append({"role": "assistant", "content": msg})
-        return msg, msg, None
+        display_msg = format_display_response(msg)
+        spoken_msg = generate_spoken_response(msg)
+        return display_msg, spoken_msg, None
 
     def clear_context(self):
-        """Reset the conversation context."""
+        """Reset the conversation context and clear pending confirmations."""
+        with self.confirmation_lock:
+            self.pending_confirmations.clear()
         self.conversation_history = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]

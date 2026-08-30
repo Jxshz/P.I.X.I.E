@@ -10,8 +10,9 @@ For ordinary explanatory or conversational questions, write in short, connected 
 
 Use Markdown only when it genuinely helps: code blocks for code, tables for comparisons the user explicitly asked for, bullet lists when the information is a genuine checklist or enumeration. Never use Markdown decoration as a substitute for clear thinking.
 
-### Concrete example of the target style
+### Concrete examples of the target style
 
+Example 1: Role comparison
 User: "explain me about manager and entrepreneurship"
 
 Good response (natural, conversational, well-structured prose):
@@ -29,7 +30,18 @@ Bad response (do NOT do this):
 **Where they differ:**
 - Managers optimise; entrepreneurs innovate"
 
-The good example shows the right rhythm. Apply that rhythm to all conversational answers.
+Example 2: Concept / category explanation
+User: "explain about planning premises"
+
+Good response (integrated conversational prose):
+"Planning premises are the foundational assumptions and expectations a manager relies on when putting together a plan. They fall broadly into two areas: physical premises, which cover tangible factors like office space, equipment availability, and supply chains; and logical or operational premises, which deal with forecasts, market demand, regulatory shifts, and financial projections. By making these assumptions explicit upfront, teams have a clear benchmark to assess whether reality aligns with their original blueprint."
+
+Bad response (do NOT do this):
+"**Types of Planning Premises:**
+- **Physical premises** — the building or space...
+- **Logical premises** — the assumptions..."
+
+The good examples show the right rhythm. Apply that rhythm to all conversational answers.
 
 ## Personality
 
@@ -72,6 +84,139 @@ The good example shows the right rhythm. Apply that rhythm to all conversational
 - Narrate bullets as if reading a document aloud.
 - Write any response that would sound wrong when read by a text-to-speech engine.
 """
+
+
+
+def format_display_response(raw_text: str) -> str:
+    """
+    Transforms the raw LLM response into a clean, readable text format for the UI.
+
+    Unlike text-to-speech output which collapses everything into a single flowing line,
+    the display response preserves visual paragraph structure, code indentation, and
+    meaningful technical identifiers while stripping raw Markdown syntax artefacts
+    (e.g., **, ###, ---, table fences) so the UI remains clean without requiring a full
+    HTML Markdown renderer.
+    """
+    if not raw_text:
+        return ""
+
+    text = raw_text
+
+    # 1. Images: ![alt](url) -> remove entirely
+    text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
+
+    # 2. Markdown tables: format into clean, readable text representation
+    def _format_table_blocks(content: str) -> str:
+        lines = content.split('\n')
+        result_lines = []
+        table_lines = []
+
+        def flush_table():
+            if not table_lines:
+                return
+            filtered = [
+                l for l in table_lines
+                if not re.match(r'^\s*\|[\s\-:|]+\|\s*$', l)
+            ]
+            if not filtered:
+                table_lines.clear()
+                return
+
+            rows = []
+            for row_line in filtered:
+                cells = [c.strip() for c in row_line.strip().strip('|').split('|')]
+                if any(cells):
+                    rows.append(cells)
+
+            if not rows:
+                table_lines.clear()
+                return
+
+            if len(rows) == 1:
+                result_lines.append(" | ".join(rows[0]))
+            else:
+                headers = rows[0]
+                data_rows = rows[1:]
+                for row in data_rows:
+                    if len(headers) == 2 and len(row) >= 2:
+                        result_lines.append(f"{row[0]}: {row[1]}")
+                    elif len(headers) > 2 and len(row) == len(headers):
+                        details = ", ".join(f"{h}: {v}" for h, v in zip(headers[1:], row[1:]) if v)
+                        if details:
+                            result_lines.append(f"{row[0]} — {details}")
+                        else:
+                            result_lines.append(row[0])
+                    else:
+                        result_lines.append(" | ".join(c for c in row if c))
+            table_lines.clear()
+
+        for line in lines:
+            if re.match(r'^\s*\|.*\|\s*$', line):
+                table_lines.append(line)
+            else:
+                flush_table()
+                result_lines.append(line)
+
+        flush_table()
+        return '\n'.join(result_lines)
+
+    text = _format_table_blocks(text)
+
+    # 3. Links: [text](url) -> text (url) if distinct and valid url, else text
+    def _handle_link(m: re.Match) -> str:
+        link_text = m.group(1).strip()
+        url = m.group(2).strip()
+        if not url or url.startswith('#'):
+            return link_text
+        if link_text == url:
+            return url
+        return f"{link_text} ({url})"
+
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _handle_link, text)
+
+    # 4. Fenced code blocks: extract content without backtick fences
+    text = re.sub(r'```[a-zA-Z]*\n?(.*?)```', r'\1', text, flags=re.DOTALL)
+
+    # 5. Inline code: `code` -> code (strip backticks, keep identifier)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+
+    # 6. Headings: # Heading -> Heading (strip leading # symbols)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+
+    # 7. Blockquotes: > quote -> quote
+    text = re.sub(r'^>\s+', '', text, flags=re.MULTILINE)
+
+    # 8. Horizontal rules: ---, ***, ___ -> remove
+    text = re.sub(r'^\s*([-*_]){3,}\s*$', '', text, flags=re.MULTILINE)
+
+    # 9. Bullet lists: strip leading bullet characters (- , * , + , • , – , — , \d+. )
+    text = re.sub(r'^\s*(?:[-*+•–—]|\d+[.)])\s+', '', text, flags=re.MULTILINE)
+
+    # 10. Bold/Italic formatting:
+    text = re.sub(r'\*{3}\s*([^*]+?)\s*\*{3}', r'\1', text)
+    text = re.sub(r'\*{2}\s*([^*]+?)\s*\*{2}', r'\1', text)
+    text = re.sub(r'(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)', r'\1', text)
+    text = re.sub(r'_{3}\s*([^_]+?)\s*_{3}', r'\1', text)
+    text = re.sub(r'_{2}\s*([^_]+?)\s*_{2}', r'\1', text)
+    text = re.sub(r'(?<!\w)_([^_\n]+)_(?!\w)', r'\1', text)
+
+    # 11. Stray markdown markers cleanup (preserve math like 2 * 3 and identifiers like my_var)
+    text = text.replace('***', '').replace('**', '')
+    text = re.sub(r'^\s*\*\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\s*\*\s*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\*\s*(?=[.,!?;:])', '', text)
+
+    # 12. Whitespace & paragraph cleanup:
+    # Strip trailing whitespace on each line (preserves leading indentation for code blocks)
+    text = re.sub(r'[ \t]+$', '', text, flags=re.MULTILINE)
+    # Collapse multiple inline spaces between words (preserves leading indentation)
+    text = re.sub(r'(?<=\S)[ \t]{2,}', ' ', text)
+    # Collapse lines with only whitespace to empty line
+    text = re.sub(r'^\s+$', '', text, flags=re.MULTILINE)
+    # Collapse 3+ newlines to max 2 newlines (preserve paragraphs)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text.strip()
 
 
 def generate_spoken_response(display_text: str) -> str:

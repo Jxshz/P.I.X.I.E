@@ -41,6 +41,47 @@ def test_voice_endpoint_success(mock_agent):
     assert response.json()["response"] == "Mocked response"
     assert response.json()["spoken_response"] == "Mocked spoken"
 
+def test_chat_endpoint_display_formatting_end_to_end(monkeypatch):
+    """
+    Step 8 & Critical Question Test:
+    Ensures that raw Groq completions containing markdown list items and bold tags
+    are cleanly normalized by format_display_response() when served via FastAPI /chat.
+    """
+    raw_payload = (
+        "Sure thing, Sir. Could you let me know which “premises” you're referring to?\n\n"
+        "- **Physical premises** — the building or space you need to plan (layout, capacity, safety, etc.).\n"
+        "- **Logical premises** — the assumptions or statements that form the basis of a plan or argument.\n\n"
+        "A quick clarification will help me give you the most useful explanation."
+    )
+
+    class MockMessage:
+        content = raw_payload
+        tool_calls = None
+
+    class MockChoice:
+        message = MockMessage()
+
+    class MockCompletion:
+        choices = [MockChoice()]
+        usage = None
+
+    async def mock_create(**kwargs):
+        return MockCompletion()
+
+    from backend.main import agent
+    monkeypatch.setattr(agent.client.chat.completions, "create", mock_create)
+
+    response = client.post("/chat", json={"message": "explain about planning premises"})
+    assert response.status_code == 200
+    data = response.json()
+    assert "**" not in data["response"]
+    assert "***" not in data["response"]
+    assert "##" not in data["response"]
+    assert "---" not in data["response"]
+    assert not any(l.strip().startswith("- ") for l in data["response"].split("\n"))
+    assert "Physical premises — the building or space you need to plan" in data["response"]
+    assert "Logical premises — the assumptions or statements that form the basis" in data["response"]
+
 def test_system_prompt_loading():
     assert "P.I.X.I.E." in SYSTEM_PROMPT
     assert "Sir" in SYSTEM_PROMPT
