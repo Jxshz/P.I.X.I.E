@@ -52,3 +52,8 @@ Icon
 # Agent Memory/State
 memory.db
 state.json
+
+# Usage Telemetry Database
+*.db
+*.db-wal
+*.db-shm

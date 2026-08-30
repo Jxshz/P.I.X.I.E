@@ -18,7 +18,7 @@ let selectedVoice = null;
 function loadVoices() {
     const voices = window.speechSynthesis.getVoices();
     if (!voices.length) return;
-    
+
     // Try to find a preferred voice
     for (const name of VOICE_CONFIG.preferredVoices) {
         const voice = voices.find(v => v.name.includes(name) && v.lang.startsWith('en'));
@@ -27,7 +27,7 @@ function loadVoices() {
             return;
         }
     }
-    
+
     // Fallback to first available English voice
     selectedVoice = voices.find(v => v.lang.startsWith('en')) || voices[0];
 }
@@ -43,7 +43,7 @@ function setStatus(state) {
     currentState = state;
     statusSpan.textContent = state;
     document.body.setAttribute('data-state', state);
-    
+
     if (state === 'SPEAKING') {
         sendBtn.setAttribute('aria-label', 'Stop speaking');
     } else {
@@ -62,12 +62,12 @@ if (!SpeechRecognition) {
 
 function startListening() {
     if (!SpeechRecognition) return;
-    
+
     // Force cleanup of any previous instance to release microphone in Safari
     if (recognition) {
         try { recognition.abort(); } catch(e) {}
     }
-    
+
     recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = false;
@@ -83,7 +83,7 @@ function startListening() {
         const transcript = event.results[0][0].transcript;
         userInput.value = transcript;
         sendMessage(true); // true for voice
-        
+
         // Explicitly abort to force Safari to release the microphone immediately
         // since we already got our single-turn result
         try { recognition.abort(); } catch(e) {}
@@ -107,7 +107,7 @@ function startListening() {
             setStatus('IDLE');
         }
     };
-    
+
     recognition.start();
 }
 
@@ -139,13 +139,13 @@ function appendMessage(text, sender) {
     const msgDiv = document.createElement('div');
     msgDiv.classList.add('message');
     msgDiv.classList.add(sender === 'user' ? 'user-msg' : 'system-msg');
-    
+
     const contentDiv = document.createElement('div');
     contentDiv.classList.add('message-content');
     contentDiv.textContent = text;
-    
+
     msgDiv.appendChild(contentDiv);
-    
+
     chatBox.appendChild(msgDiv);
     chatBox.scrollTop = chatBox.scrollHeight;
 }
@@ -157,7 +157,7 @@ function speakText(text) {
 
         setStatus('SPEAKING');
         const utterance = new SpeechSynthesisUtterance(text);
-        
+
         if (selectedVoice) {
             utterance.voice = selectedVoice;
         }
@@ -199,11 +199,11 @@ async function sendMessage(isVoice = false) {
 
     appendMessage(text, 'user');
     userInput.value = '';
-    
+
     // Disable input while waiting
     userInput.disabled = true;
     sendBtn.disabled = true;
-    
+
     setStatus('PROCESSING');
 
     const endpoint = isVoice ? '/voice' : '/chat';
@@ -218,6 +218,13 @@ async function sendMessage(isVoice = false) {
         });
 
         if (!response.ok) {
+            if (response.status === 429) {
+                const data = await response.json();
+                appendMessage(data.response, 'system');
+                const textToSpeak = data.spoken_response ? data.spoken_response : data.response;
+                speakText(textToSpeak);
+                return;
+            }
             throw new Error(`HTTP error! status: ${response.status}`);
         }
 
@@ -253,3 +260,151 @@ userInput.addEventListener('keypress', (e) => {
         sendMessage(false);
     }
 });
+
+// --------------------------------------------------
+// Usage Dashboard Logic
+// --------------------------------------------------
+
+const usageToggleBtn = document.getElementById('usage-toggle-btn');
+const usageDashboard = document.getElementById('usage-dashboard');
+const inputContainer = document.querySelector('.input-container');
+
+let dashboardInterval = null;
+let isDashboardVisible = false;
+
+usageToggleBtn.addEventListener('click', () => {
+    isDashboardVisible = !isDashboardVisible;
+
+    if (isDashboardVisible) {
+        chatBox.classList.add('hidden');
+        inputContainer.classList.add('hidden');
+        usageDashboard.classList.remove('hidden');
+        updateDashboard();
+        dashboardInterval = setInterval(updateDashboard, 5000);
+    } else {
+        chatBox.classList.remove('hidden');
+        inputContainer.classList.remove('hidden');
+        usageDashboard.classList.add('hidden');
+        if (dashboardInterval) {
+            clearInterval(dashboardInterval);
+            dashboardInterval = null;
+        }
+    }
+});
+
+function formatNumber(num) {
+    return new Intl.NumberFormat('en-US').format(num);
+}
+
+function formatDate(dateStr) {
+    const d = new Date(dateStr);
+    const today = new Date();
+
+    if (d.getUTCFullYear() === today.getUTCFullYear() &&
+        d.getUTCMonth() === today.getUTCMonth() &&
+        d.getUTCDate() === today.getUTCDate()) {
+        return 'TODAY';
+    }
+
+    const options = { month: 'short', day: 'numeric', timeZone: 'UTC' };
+    return d.toLocaleDateString('en-US', options).toUpperCase();
+}
+
+async function updateDashboard() {
+    if (!isDashboardVisible) return;
+
+    try {
+        // Fetch live telemetry
+        const statusRes = await fetch(`${API_BASE}/status`);
+        if (!statusRes.ok) throw new Error('Status fetch failed');
+        const statusData = await statusRes.json();
+
+        // Update model
+        document.getElementById('active-model').textContent = statusData.model.toUpperCase();
+
+        // Update LIVE metrics
+        document.getElementById('tokens-today').textContent = formatNumber(statusData.tokens_day);
+
+        let percentUsed = 0;
+        if (statusData.tpd_limit > 0) {
+            percentUsed = (statusData.tokens_day / statusData.tpd_limit) * 100;
+        }
+
+        let percentStr = percentUsed.toFixed(2);
+        if (percentStr.endsWith('.00')) {
+            percentStr = percentUsed.toFixed(0);
+        }
+
+        const barLength = 20;
+        const filledLength = Math.min(barLength, Math.ceil((percentUsed / 100) * barLength));
+        const emptyLength = barLength - filledLength;
+        const bar = '[' + '-'.repeat(filledLength) + ' '.repeat(emptyLength) + ']';
+
+        document.getElementById('tokens-percent').innerHTML = `<span style="font-family: monospace; white-space: pre;">${bar}</span> ${percentStr}%`;
+
+        document.getElementById('req-today').textContent = `${formatNumber(statusData.requests_day)} / ${formatNumber(statusData.rpd_limit)}`;
+        document.getElementById('tok-today').textContent = `${formatNumber(statusData.tokens_day)} / ${formatNumber(statusData.tpd_limit)}`;
+
+        document.getElementById('req-min').textContent = `${formatNumber(statusData.requests_minute)} / ${formatNumber(statusData.rpm_limit)}`;
+        document.getElementById('tok-min').textContent = `${formatNumber(statusData.tokens_minute)} / ${formatNumber(statusData.tpm_limit)}`;
+
+        document.getElementById('rem-req-min').textContent = formatNumber(statusData.rpm_remaining);
+        document.getElementById('rem-tok-min').textContent = formatNumber(statusData.tpm_remaining);
+        document.getElementById('rem-req-day').textContent = formatNumber(statusData.rpd_remaining);
+        document.getElementById('rem-tok-day').textContent = formatNumber(statusData.tpd_remaining);
+
+        // Fetch historical usage
+        const historyRes = await fetch(`${API_BASE}/usage/history`);
+        if (!historyRes.ok) throw new Error('History fetch failed');
+        const historyData = await historyRes.json();
+
+        const historyList = document.getElementById('history-list');
+        historyList.innerHTML = '';
+
+        let totalBlocks = 0;
+
+        if (historyData.days && historyData.days.length > 0) {
+            // Header
+            const headerItem = document.createElement('div');
+            headerItem.className = 'history-header';
+            headerItem.innerHTML = `
+                <span>DATE</span>
+                <span>REQUESTS</span>
+                <span>TOKENS</span>
+                <span>BLOCKS</span>
+            `;
+            historyList.appendChild(headerItem);
+
+            historyData.days.slice(0, 7).forEach(day => {
+                totalBlocks += day.rate_limit_blocks;
+
+                const item = document.createElement('div');
+                item.className = 'history-row';
+
+                item.innerHTML = `
+                    <span data-label="DATE">${formatDate(day.date)}</span>
+                    <span data-label="REQUESTS">${formatNumber(day.requests)}</span>
+                    <span data-label="TOKENS">${formatNumber(day.tokens)}</span>
+                    <span data-label="BLOCKS">${formatNumber(day.rate_limit_blocks)}</span>
+                `;
+
+                historyList.appendChild(item);
+            });
+        } else {
+            const empty = document.createElement('div');
+            empty.className = 'error-state';
+            empty.textContent = 'No usage history available yet.';
+            historyList.appendChild(empty);
+        }
+
+        // Update PROTECTION
+        document.getElementById('protection-blocks').textContent = `${formatNumber(totalBlocks)} RATE-LIMIT BLOCKS`;
+
+    } catch (e) {
+        console.error('Error updating dashboard:', e);
+        const historyList = document.getElementById('history-list');
+        if (historyList.children.length === 0 || historyList.querySelector('.error-state')) {
+            historyList.innerHTML = '<div class="error-state">USAGE HISTORY UNAVAILABLE</div>';
+        }
+    }
+}

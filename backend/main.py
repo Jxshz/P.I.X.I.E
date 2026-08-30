@@ -90,6 +90,13 @@ def status_endpoint():
         "tpd_remaining": max(0, tpd_limit - tok_day)
     }
 
+@app.get("/usage/history")
+def usage_history_endpoint():
+    """
+    Returns historical usage telemetry for the last 30 days.
+    """
+    return agent.usage_store.get_daily_history(days=30)
+
 @app.post("/api/clear")
 def clear_context():
     """

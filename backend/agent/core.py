@@ -5,6 +5,7 @@ from groq import AsyncGroq
 from dotenv import load_dotenv
 from backend.agent.personality import SYSTEM_PROMPT, generate_spoken_response
 from backend.agent.token_governor import TokenGovernor
+from backend.storage.usage_store import UsageStore
 
 # Load .env from the project root
 env_path = Path(__file__).parent.parent.parent / '.env'
@@ -17,12 +18,13 @@ class RateLimitException(Exception):
         super().__init__(self.message)
 
 class AgentCore:
-    def __init__(self):
+    def __init__(self, db_path: str = None):
         # AsyncGroq automatically picks up GROQ_API_KEY from env
         self.client = AsyncGroq()
         # Use model from environment, fallback to the confirmed working model
         self.model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
         self.governor = TokenGovernor()
+        self.usage_store = UsageStore(db_path=db_path)
         self.conversation_history: List[Dict[str, str]] = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
@@ -57,6 +59,7 @@ class AgentCore:
         if not is_allowed:
             # Do not corrupt history, pop the unprocessed message
             self.conversation_history.pop()
+            self.usage_store.record_rate_limit(self.model)
             raise RateLimitException(error_msg)
 
         try:
@@ -67,7 +70,16 @@ class AgentCore:
                 max_tokens=self.governor.max_completion_tokens,
             )
 
-            self.governor.record_usage(reservation, getattr(chat_completion, 'usage', None), failed=False)
+            usage = getattr(chat_completion, 'usage', None)
+            self.governor.record_usage(reservation, usage, failed=False)
+
+            # Record historical usage
+            if usage:
+                req_tokens = getattr(usage, 'prompt_tokens', None)
+                tot_tokens = getattr(usage, 'total_tokens', 0)
+                self.usage_store.record_success(self.model, total_tokens=tot_tokens, request_tokens=req_tokens)
+            else:
+                self.usage_store.record_success(self.model, total_tokens=0, request_tokens=None)
 
             response = chat_completion.choices[0].message.content
             self.conversation_history.append({"role": "assistant", "content": response})

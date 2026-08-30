@@ -1,12 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>P.I.X.I.E. Interface</title>
+    <title>P.I.X.I.E.</title>
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
+
 <body data-state="IDLE">
     <div class="app-container">
         <header class="app-header">
@@ -14,29 +16,135 @@
                 <h1>P.I.X.I.E.</h1>
             </div>
             <div class="header-right">
+                <button id="usage-toggle-btn" class="action-btn" aria-label="Toggle Usage Dashboard">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 20v-6M6 20V10M18 20V4"></path>
+                    </svg>
+                </button>
                 <div class="status-indicator"></div>
                 <span class="status" id="agent-status">IDLE</span>
             </div>
         </header>
-        
+
         <main class="chat-area" id="chat-box">
             <!-- Chat messages will be appended here -->
             <div class="message system-msg">
                 <div class="message-content">Welcome to P.I.X.I.E. How can I assist you?</div>
             </div>
         </main>
-        
+
+        <section class="usage-dashboard hidden" id="usage-dashboard">
+            <div class="dashboard-header">
+                <h2>Usage</h2>
+            </div>
+
+            <div class="dashboard-content">
+                <div class="dashboard-section">
+                    <h3 class="section-heading">LIVE GOVERNOR (ROLLING WINDOWS)</h3>
+
+                    <div class="metric-group">
+                        <div class="group-title">TODAY (LAST 24 HOURS)</div>
+                        <div class="metric-card primary-metric">
+                            <div class="metric-label">TOKENS TODAY</div>
+                            <div class="metric-value" id="tokens-today">0</div>
+                            <div class="metric-subtext" id="tokens-percent">[--------------------] 0%</div>
+                        </div>
+                    </div>
+
+                    <div class="metric-group">
+                        <div class="group-title">TODAY LIMITS</div>
+                        <div class="metric-row">
+                            <span>REQUESTS</span>
+                            <span id="req-today">0 / 0</span>
+                        </div>
+                        <div class="metric-row">
+                            <span>TOKENS</span>
+                            <span id="tok-today">0 / 0</span>
+                        </div>
+                    </div>
+
+                    <div class="metric-group">
+                        <div class="group-title">CURRENT MINUTE</div>
+                        <div class="metric-row">
+                            <span>REQUESTS</span>
+                            <span id="req-min">0 / 0</span>
+                        </div>
+                        <div class="metric-row">
+                            <span>TOKENS</span>
+                            <span id="tok-min">0 / 0</span>
+                        </div>
+                    </div>
+
+                    <div class="metric-group">
+                        <div class="group-title">REMAINING</div>
+                        <div class="metric-row">
+                            <span>REQUESTS/MIN</span>
+                            <span id="rem-req-min">0</span>
+                        </div>
+                        <div class="metric-row">
+                            <span>TOKENS/MIN</span>
+                            <span id="rem-tok-min">0</span>
+                        </div>
+                        <div class="metric-row">
+                            <span>REQUESTS/DAY</span>
+                            <span id="rem-req-day">0</span>
+                        </div>
+                        <div class="metric-row">
+                            <span>TOKENS/DAY</span>
+                            <span id="rem-tok-day">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-section">
+                    <h3 class="section-heading">PERSISTED HISTORY (CALENDAR DAYS)</h3>
+
+                    <div class="metric-group">
+                        <div class="group-title">PROTECTION</div>
+                        <div class="metric-row">
+                            <span id="protection-blocks">0 RATE-LIMIT BLOCKS</span>
+                        </div>
+                    </div>
+
+                    <div class="metric-group">
+                        <div class="group-title">USAGE HISTORY</div>
+                        <div class="history-list" id="history-list">
+                            <!-- History items injected here -->
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-footer">
+                    <span class="secondary-text">SYSTEM MODEL: <span id="active-model">UNKNOWN</span></span>
+                </div>
+            </div>
+        </section>
+
         <div class="input-container">
             <button id="mic-btn" class="action-btn mic-btn" aria-label="Start Voice Input">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="22"></line></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                    <line x1="12" y1="19" x2="12" y2="22"></line>
+                </svg>
             </button>
             <input type="text" id="user-input" class="text-input" placeholder="Message P.I.X.I.E..." autocomplete="off">
             <button id="send-btn" class="action-btn send-btn" aria-label="Send message">
-                <svg class="icon-send" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
-                <svg class="icon-stop" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12"></rect></svg>
+                <svg class="icon-send" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"
+                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+                <svg class="icon-stop" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"
+                    fill="currentColor" stroke="none">
+                    <rect x="6" y="6" width="12" height="12"></rect>
+                </svg>
             </button>
         </div>
     </div>
     <script src="app.js"></script>
 </body>
+
 </html>

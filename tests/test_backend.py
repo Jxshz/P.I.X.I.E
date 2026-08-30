@@ -5,6 +5,12 @@ from backend.agent.personality import SYSTEM_PROMPT, generate_spoken_response
 
 client = TestClient(app)
 
+@pytest.fixture(autouse=True)
+def isolate_global_db(tmp_path):
+    from backend.main import agent
+    from backend.storage.usage_store import UsageStore
+    agent.usage_store = UsageStore(db_path=str(tmp_path / "test_global.db"))
+
 def test_health_check():
     response = client.get("/health")
     assert response.status_code == 200
@@ -193,7 +199,7 @@ def test_day_window_resets(monkeypatch):
 @pytest.mark.asyncio
 async def test_context_trimming():
     from backend.agent.core import AgentCore
-    core = AgentCore()
+    core = AgentCore(db_path=":memory:")
     # Fill context with many messages
     core.conversation_history = [{"role": "system", "content": "SYS"}]
     for i in range(20):
@@ -224,7 +230,7 @@ async def test_context_trimming():
 @pytest.mark.asyncio
 async def test_governor_denial_does_not_call_groq():
     from backend.agent.core import AgentCore
-    core = AgentCore()
+    core = AgentCore(db_path=":memory:")
     core.governor.rpm_limit = 0 # Force denial
 
     groq_called = False
@@ -248,7 +254,7 @@ async def test_governor_denial_does_not_call_groq():
 @pytest.mark.asyncio
 async def test_failed_groq_releases_reservation():
     from backend.agent.core import AgentCore
-    core = AgentCore()
+    core = AgentCore(db_path=":memory:")
 
     class MockCreateError:
         async def create(self, **kwargs):
@@ -267,7 +273,7 @@ async def test_failed_groq_releases_reservation():
 @pytest.mark.asyncio
 async def test_concurrent_requests_do_not_double_admit():
     from backend.agent.core import AgentCore
-    core = AgentCore()
+    core = AgentCore(db_path=":memory:")
     core.governor.rpm_limit = 1
 
     # We will simulate a slow Groq call to ensure concurrency gap is closed
@@ -303,7 +309,7 @@ async def test_concurrent_requests_do_not_double_admit():
 @pytest.mark.asyncio
 async def test_governor_failure_fails_closed():
     from backend.agent.core import AgentCore
-    core = AgentCore()
+    core = AgentCore(db_path=":memory:")
 
     # Force a failure inside the governor
     def failing_preflight(*args, **kwargs):
