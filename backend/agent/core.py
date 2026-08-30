@@ -76,18 +76,29 @@ class AgentCore:
             expired_keys = [k for k, v in self.pending_confirmations.items() if now > v.expires_at]
             for k in expired_keys:
                 self.pending_confirmations.pop(k, None)
+            active_conf_ids = set(self.pending_confirmations.keys())
 
-        max_context_tokens = 6000
+        max_context_tokens = 3000
         while len(self.conversation_history) > 2 and self.governor.estimate_tokens(self.conversation_history) > max_context_tokens:
-            msg = self.conversation_history.pop(1)
+            # Check if the message at index 1 is an active pending confirmation tool placeholder
+            msg = self.conversation_history[1]
+            if msg.get("role") == "tool" and any(f"[PENDING_CONFIRMATION_{cid}]" in str(msg.get("content", "")) for cid in active_conf_ids):
+                break
+
+            popped = self.conversation_history.pop(1)
             # If we pop an assistant message with tool calls, we must also pop the corresponding tool responses
-            if msg.get("role") == "assistant" and "tool_calls" in msg:
-                num_calls = len(msg["tool_calls"])
+            if popped.get("role") == "assistant" and "tool_calls" in popped:
+                num_calls = len(popped["tool_calls"])
                 for _ in range(num_calls):
                     if len(self.conversation_history) > 1 and self.conversation_history[1].get("role") == "tool":
-                        self.conversation_history.pop(1)
-            # If we somehow hit a dangling tool message, pop it too
+                        tool_msg = self.conversation_history[1]
+                        if not any(f"[PENDING_CONFIRMATION_{cid}]" in str(tool_msg.get("content", "")) for cid in active_conf_ids):
+                            self.conversation_history.pop(1)
+            # If we hit a dangling non-pending tool message, pop it too
             while len(self.conversation_history) > 1 and self.conversation_history[1].get("role") == "tool":
+                tool_msg = self.conversation_history[1]
+                if any(f"[PENDING_CONFIRMATION_{cid}]" in str(tool_msg.get("content", "")) for cid in active_conf_ids):
+                    break
                 self.conversation_history.pop(1)
 
     async def handle_confirmation(self, confirmation_id: str, approved: bool) -> Tuple[str, str, Optional[Dict[str, Any]]]:

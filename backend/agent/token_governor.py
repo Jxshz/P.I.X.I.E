@@ -45,8 +45,9 @@ class TokenGovernor:
 
     def estimate_tokens(self, messages: List[Dict[str, Any]]) -> int:
         """
-        Conservatively estimates input tokens based on character count.
-        Assumes ~4 chars per token for English, multiplied by a 1.5 safety factor.
+        Estimates input tokens based on character count.
+        Assumes ~3.8 chars per token for English text and code, providing a safe 5-10% buffer
+        above typical Llama tokenization averages (~4.2 chars/token).
         """
         total_chars = 0
         for msg in messages:
@@ -58,7 +59,7 @@ class TokenGovernor:
             if tool_calls:
                 total_chars += len(str(tool_calls))
 
-        estimate = int((total_chars / 4.0) * 1.5)
+        estimate = int(total_chars / 3.8)
         return estimate if estimate > 0 else 1
 
     def preflight(self, messages: List[Dict[str, str]]) -> Tuple[bool, str, Optional[Reservation]]:
@@ -71,8 +72,9 @@ class TokenGovernor:
         req_min, tok_min, req_day, tok_day = self._get_current_usage(now)
 
         input_estimate = self.estimate_tokens(messages)
-        # Total estimate includes the absolute maximum output tokens we allow Groq to generate
-        total_estimate = input_estimate + self.max_completion_tokens
+        # Reserve input + reasonable completion headroom (capped by max_completion_tokens)
+        completion_headroom = min(self.max_completion_tokens, 512)
+        total_estimate = input_estimate + completion_headroom
 
         # Check daily limits first
         if req_day >= self.rpd_limit or (tok_day + total_estimate) > self.tpd_limit:

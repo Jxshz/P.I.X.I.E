@@ -42,9 +42,9 @@ def test_normal_messages_remain_correct():
         "role": "user",
         "content": "A" * 40
     }
-    # (40 / 4.0) * 1.5 = 15
+    # 40 / 3.8 = 10
     estimate = gov.estimate_tokens([msg])
-    assert estimate == 15
+    assert estimate == 10
 
 def test_missing_none_content_with_tool_calls():
     gov = TokenGovernor()
@@ -83,3 +83,113 @@ def test_regression_zero_estimate_with_none_content():
     }
     estimate = gov.estimate_tokens([msg])
     assert estimate > 1
+
+
+def test_multiturn_conversation_does_not_falsely_exhaust_governor():
+    """
+    Regression Test for Phase 4.5 Stability Rectification:
+    Verifies that a 10-turn sequential conversation within a single minute window
+    does NOT trigger false-positive short-term processing exhaustion.
+    """
+    from backend.agent.core import AgentCore
+    agent = AgentCore(db_path=":memory:")
+
+    turns = [
+        ("Explain planning purposes", "Planning is defining goals and strategies to coordinate activities."),
+        ("Explain it simply", "Planning is deciding what to do before doing it."),
+        ("Give me an example", "An architect creating blueprints before building."),
+        ("Why is planning important?", "It reduces uncertainty, minimizes waste, and sets standards."),
+        ("Compare planning and organising", "Planning sets goals; organising assigns resources."),
+        ("Explain in one sentence", "Planning is mapping the route to your destination."),
+        ("Give another example", "A student preparing a study timetable for finals."),
+        ("Explain for an exam", "Planning is the primary management function upon which others depend."),
+        ("Make it simpler", "Choose where you want to go before you drive."),
+        ("Summarise", "Planning aligns teams, clarifies targets, and improves execution.")
+    ]
+
+    for i, (prompt, response) in enumerate(turns, 1):
+        agent.conversation_history.append({"role": "user", "content": prompt})
+        agent._trim_context()
+
+        is_allowed, err_msg, res = agent.governor.preflight(agent.conversation_history)
+        assert is_allowed is True, f"Turn {i} ('{prompt}') falsely exhausted governor: {err_msg}"
+        assert res is not None
+
+        # Simulate Groq completion usage
+        actual_prompt = int(sum(len(m.get("content", "")) for m in agent.conversation_history) / 4)
+        actual_comp = int(len(response) / 4)
+
+        class MockUsage:
+            total_tokens = actual_prompt + actual_comp
+            prompt_tokens = actual_prompt
+            completion_tokens = actual_comp
+
+        agent.governor.record_usage(res, MockUsage())
+        agent.conversation_history.append({"role": "assistant", "content": response})
+
+    # Verify total usage across all 10 turns is well within 8000 TPM limit
+    req_m, tok_m, _, _ = agent.governor.get_status()["requests_minute"], agent.governor.get_status()["tokens_minute"], None, None
+    assert req_m == 10
+    assert tok_m < 8000
+
+
+def test_20_turn_context_trimming_preserves_bounded_tokens():
+    """
+    Verifies that context trimming prevents unbounded token growth across 20 turns.
+    """
+    from backend.agent.core import AgentCore
+    agent = AgentCore(db_path=":memory:")
+
+    for i in range(20):
+        agent.conversation_history.append({"role": "user", "content": f"Question {i}: " + "test " * 20})
+        agent._trim_context()
+        agent.conversation_history.append({"role": "assistant", "content": f"Answer {i}: " + "response " * 30})
+
+    # System message must still be preserved at index 0
+    assert agent.conversation_history[0]["role"] == "system"
+    # Token count of trimmed history must not exceed max context limit
+    assert agent.governor.estimate_tokens(agent.conversation_history) <= 3000
+
+
+def test_reservation_invariant_no_leaked_reservations():
+    """
+    Verifies that preflight reservations are cleanly reconciled without leaking inflated tokens.
+    """
+    gov = TokenGovernor()
+    messages = [{"role": "user", "content": "Hello world"}]
+
+    # Preflight creates 1 reservation
+    allowed, _, res = gov.preflight(messages)
+    assert allowed is True
+    assert len(gov._minute_window) == 1
+    reserved_tokens = gov._minute_window[0].tokens
+
+    # Failed request drops reservation completely
+    gov.record_usage(res, failed=True)
+    assert len(gov._minute_window) == 0
+
+    # Successful request reconciles to actual tokens
+    allowed, _, res2 = gov.preflight(messages)
+    assert len(gov._minute_window) == 1
+
+    class MockUsage:
+        total_tokens = 50
+
+    gov.record_usage(res2, MockUsage())
+    assert len(gov._minute_window) == 1
+    assert gov._minute_window[0].tokens == 50
+    assert gov._minute_window[0].tokens < reserved_tokens
+
+
+def test_legitimate_exhaustion_still_rejected():
+    """
+    Verifies that genuinely excessive requests exceeding limits are still rejected.
+    """
+    gov = TokenGovernor()
+    # Create massive message exceeding TPM limit (8000 tokens * 3.8 = 30400 chars)
+    massive_msg = [{"role": "user", "content": "X" * 35000}]
+
+    allowed, err_msg, res = gov.preflight(massive_msg)
+    assert allowed is False
+    assert res is None
+    assert "short-term processing limit" in err_msg
