@@ -208,6 +208,7 @@ async def test_context_trimming():
 
     class MockMessage:
         content = "Response"
+        tool_calls = None
     class MockChoice:
         message = MockMessage()
     class MockCompletion:
@@ -282,6 +283,7 @@ async def test_concurrent_requests_do_not_double_admit():
             await asyncio.sleep(0.1)
             class MockMessage:
                 content = "Response"
+                tool_calls = None
             class MockChoice:
                 message = MockMessage()
             class MockCompletion:
@@ -359,6 +361,7 @@ async def test_status_updates_after_request():
 
     class MockMessage:
         content = "Response"
+        tool_calls = None
     class MockChoice:
         message = MockMessage()
     class MockUsage:

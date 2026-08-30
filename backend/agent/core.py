@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from backend.agent.personality import SYSTEM_PROMPT, generate_spoken_response
 from backend.agent.token_governor import TokenGovernor
 from backend.storage.usage_store import UsageStore
+from backend.tools import ToolRegistry, SystemDiagnosticsTool
 
 # Load .env from the project root
 env_path = Path(__file__).parent.parent.parent / '.env'
@@ -25,7 +26,11 @@ class AgentCore:
         self.model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
         self.governor = TokenGovernor()
         self.usage_store = UsageStore(db_path=db_path)
-        self.conversation_history: List[Dict[str, str]] = [
+
+        self.tool_registry = ToolRegistry()
+        self.tool_registry.register(SystemDiagnosticsTool())
+
+        self.conversation_history: List[Dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
 
@@ -33,64 +38,123 @@ class AgentCore:
         """
         Trims the conversation history to stay within a safe token budget.
         Preserves the system message (index 0) and the most recent turns.
+        Safely handles tool call/response pairs.
         """
-        # Let's say max context tokens we want to send is 6000 (out of 8000 TPM limit)
         max_context_tokens = 6000
         while len(self.conversation_history) > 2 and self.governor.estimate_tokens(self.conversation_history) > max_context_tokens:
-            # Remove the oldest message after the system prompt
-            self.conversation_history.pop(1)
+            msg = self.conversation_history.pop(1)
+            # If we pop an assistant message with tool calls, we must also pop the corresponding tool responses
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                num_calls = len(msg["tool_calls"])
+                for _ in range(num_calls):
+                    if len(self.conversation_history) > 1 and self.conversation_history[1].get("role") == "tool":
+                        self.conversation_history.pop(1)
+            # If we somehow hit a dangling tool message, pop it too
+            while len(self.conversation_history) > 1 and self.conversation_history[1].get("role") == "tool":
+                self.conversation_history.pop(1)
 
     async def process_intent(self, user_input: str) -> Tuple[str, str]:
         """
-        Process the user's intent via Groq and return the response.
+        Process the user's intent via Groq, handling potential tool calls.
         Returns:
             Tuple containing (display_response, spoken_response)
         """
         self.conversation_history.append({"role": "user", "content": user_input})
 
-        try:
-            self._trim_context()
-            is_allowed, error_msg, reservation = self.governor.preflight(self.conversation_history)
-        except Exception as e:
-            self.conversation_history.pop()
-            msg = "Sir, my token governor is currently experiencing issues. Please try again in a moment."
-            return msg, msg
+        # Allow a couple of iterations for tool calling (model calls tool -> tool returns -> model replies)
+        max_iterations = 3
 
-        if not is_allowed:
-            # Do not corrupt history, pop the unprocessed message
-            self.conversation_history.pop()
-            self.usage_store.record_rate_limit(self.model)
-            raise RateLimitException(error_msg)
+        for iteration in range(max_iterations):
+            try:
+                self._trim_context()
+                is_allowed, error_msg, reservation = self.governor.preflight(self.conversation_history)
+            except Exception as e:
+                if iteration == 0:
+                    self.conversation_history.pop()
+                msg = "Sir, my token governor is currently experiencing issues. Please try again in a moment."
+                self.conversation_history.append({"role": "assistant", "content": msg})
+                return msg, msg
 
-        try:
-            chat_completion = await self.client.chat.completions.create(
-                messages=self.conversation_history,
-                model=self.model,
-                temperature=0.7,
-                max_tokens=self.governor.max_completion_tokens,
-            )
+            if not is_allowed:
+                if iteration == 0:
+                    self.conversation_history.pop()
+                self.usage_store.record_rate_limit(self.model)
+                raise RateLimitException(error_msg)
 
-            usage = getattr(chat_completion, 'usage', None)
-            self.governor.record_usage(reservation, usage, failed=False)
+            try:
+                tools = self.tool_registry.get_all_tool_schemas()
+                kwargs = {
+                    "messages": self.conversation_history,
+                    "model": self.model,
+                    "temperature": 0.7,
+                    "max_tokens": self.governor.max_completion_tokens,
+                }
+                if tools:
+                    kwargs["tools"] = tools
+                    kwargs["tool_choice"] = "auto"
 
-            # Record historical usage
-            if usage:
-                req_tokens = getattr(usage, 'prompt_tokens', None)
-                tot_tokens = getattr(usage, 'total_tokens', 0)
-                self.usage_store.record_success(self.model, total_tokens=tot_tokens, request_tokens=req_tokens)
-            else:
-                self.usage_store.record_success(self.model, total_tokens=0, request_tokens=None)
+                chat_completion = await self.client.chat.completions.create(**kwargs)
 
-            response = chat_completion.choices[0].message.content
-            self.conversation_history.append({"role": "assistant", "content": response})
+                usage = getattr(chat_completion, 'usage', None)
+                self.governor.record_usage(reservation, usage, failed=False)
 
-            spoken_response = generate_spoken_response(response)
-            return response, spoken_response
+                if usage:
+                    req_tokens = getattr(usage, 'prompt_tokens', None)
+                    tot_tokens = getattr(usage, 'total_tokens', 0)
+                    self.usage_store.record_success(self.model, total_tokens=tot_tokens, request_tokens=req_tokens)
+                else:
+                    self.usage_store.record_success(self.model, total_tokens=0, request_tokens=None)
 
-        except Exception as e:
-            self.governor.record_usage(reservation, failed=True)
-            error_msg = f"Error connecting to Groq API: {str(e)}"
-            return error_msg, error_msg
+                message = chat_completion.choices[0].message
+
+                # Construct dictionary for history safely
+                assistant_msg = {"role": "assistant"}
+                if message.content is not None:
+                    assistant_msg["content"] = message.content
+
+                if message.tool_calls:
+                    assistant_msg["tool_calls"] = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments
+                            }
+                        } for tc in message.tool_calls
+                    ]
+
+                self.conversation_history.append(assistant_msg)
+
+                # If there are no tool calls, the model has given its final response
+                if not message.tool_calls:
+                    content = message.content or ""
+                    spoken_response = generate_spoken_response(content)
+                    return content, spoken_response
+
+                # We have tool calls, process them and continue the loop
+                for tc in message.tool_calls:
+                    name = tc.function.name
+                    arguments = tc.function.arguments
+                    tool_result_str = self.tool_registry.execute_tool(name, arguments)
+
+                    self.conversation_history.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "name": name,
+                        "content": tool_result_str
+                    })
+
+            except Exception as e:
+                self.governor.record_usage(reservation, failed=True)
+                error_msg = f"Error connecting to Groq API: {str(e)}"
+                self.conversation_history.append({"role": "assistant", "content": error_msg})
+                return error_msg, error_msg
+
+        # If we exceed max iterations without returning
+        msg = "I encountered an issue processing the tool results, taking too many steps."
+        self.conversation_history.append({"role": "assistant", "content": msg})
+        return msg, msg
 
     def clear_context(self):
         """Reset the conversation context."""

@@ -43,12 +43,21 @@ class TokenGovernor:
         tok_day = sum(res.tokens for res in self._day_window)
         return req_min, tok_min, req_day, tok_day
 
-    def estimate_tokens(self, messages: List[Dict[str, str]]) -> int:
+    def estimate_tokens(self, messages: List[Dict[str, Any]]) -> int:
         """
         Conservatively estimates input tokens based on character count.
         Assumes ~4 chars per token for English, multiplied by a 1.5 safety factor.
         """
-        total_chars = sum(len(msg.get("content", "")) for msg in messages)
+        total_chars = 0
+        for msg in messages:
+            content = msg.get("content")
+            if content:
+                total_chars += len(str(content))
+
+            tool_calls = msg.get("tool_calls")
+            if tool_calls:
+                total_chars += len(str(tool_calls))
+
         estimate = int((total_chars / 4.0) * 1.5)
         return estimate if estimate > 0 else 1
 
