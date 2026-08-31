@@ -120,6 +120,11 @@ class MemoryRetriever:
         self.observability = observability or getattr(self.service, "observability", None)
         self.last_retrieval_failed = False
 
+    @property
+    def memory_service(self) -> MemoryService:
+        """Property returning the underlying MemoryService instance."""
+        return self.service
+
     def calculate_relevance(
         self,
         query: str,
@@ -241,6 +246,9 @@ class MemoryRetriever:
         """
         self.last_retrieval_failed = False
         if not query or not isinstance(query, str) or not query.strip():
+            return []
+
+        if self.service and hasattr(self.service, "is_retrieval_enabled") and not self.service.is_retrieval_enabled():
             return []
 
         try:

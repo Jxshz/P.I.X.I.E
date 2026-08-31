@@ -28,6 +28,10 @@ class MemoryEventType(str, Enum):
     MEMORY_CONFLICT_DETECTED = "MEMORY_CONFLICT_DETECTED"
     MEMORY_CONFLICT_RESOLVED = "MEMORY_CONFLICT_RESOLVED"
     MEMORY_SECURITY_REJECTED = "MEMORY_SECURITY_REJECTED"
+    PRIVACY_ENABLED = "PRIVACY_ENABLED"
+    PRIVACY_DISABLED = "PRIVACY_DISABLED"
+    PRIVACY_SETTING_CHANGED = "PRIVACY_SETTING_CHANGED"
+    RETENTION_CHECKED = "RETENTION_CHECKED"
 
 
 @dataclass
@@ -206,6 +210,66 @@ class MemoryAuditStore:
         except Exception as e:
             logger.warning(f"Failed to count audit events: {e}")
             return 0
+
+    def get_events_filtered(
+        self,
+        event_type: Optional[Union[MemoryEventType, str]] = None,
+        memory_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        category: Optional[str] = None,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+        limit: int = 50,
+        ascending: bool = False,
+    ) -> List[AuditEvent]:
+        """Retrieves audit events using parameterized SQL filtering."""
+        safe_limit = max(1, min(limit, 500))
+        clauses: List[str] = []
+        params: List[Any] = []
+
+        if event_type:
+            safe_type = event_type.value if isinstance(event_type, MemoryEventType) else str(event_type)
+            clauses.append("event_type = ?")
+            params.append(safe_type)
+
+        if memory_id:
+            clauses.append("memory_id = ?")
+            params.append(str(memory_id))
+
+        if category:
+            clauses.append("category = ?")
+            params.append(str(category))
+
+        if start_time is not None:
+            clauses.append("timestamp >= ?")
+            params.append(float(start_time))
+
+        if end_time is not None:
+            clauses.append("timestamp <= ?")
+            params.append(float(end_time))
+
+        where_stmt = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        order_dir = "ASC" if ascending else "DESC"
+        sql = f"SELECT * FROM memory_audit_events{where_stmt} ORDER BY timestamp {order_dir}, id ASC LIMIT ?"
+        params.append(safe_limit)
+
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+            events = [self._row_to_event(r) for r in rows]
+
+            if session_id:
+                events = [
+                    e for e in events
+                    if e.metadata and isinstance(e.metadata, dict) and str(e.metadata.get("session_id")) == str(session_id)
+                ]
+
+            return events
+        except Exception as e:
+            logger.warning(f"Failed to query filtered audit events: {e}")
+            return []
 
     def _row_to_event(self, row: sqlite3.Row) -> AuditEvent:
         metadata = None

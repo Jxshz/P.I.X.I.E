@@ -10,10 +10,19 @@ from groq import AsyncGroq
 from dotenv import load_dotenv
 from backend.agent.personality import SYSTEM_PROMPT, generate_spoken_response, format_display_response
 from backend.agent.token_governor import TokenGovernor
-from backend.memory import MemoryContextBuilder, MemoryRetriever, MemoryService
+from backend.memory import (
+    MemoryCommandExecutor,
+    MemoryCommandIntent,
+    MemoryCommandParser,
+    MemoryContextBuilder,
+    MemoryManagementAPI,
+    MemoryRetriever,
+    MemoryService,
+    MemoryUXFormatter,
+)
 from backend.storage.session_store import SessionStore
 from backend.storage.usage_store import UsageStore
-from backend.tools import ToolRegistry, SystemDiagnosticsTool
+from backend.tools import SystemDiagnosticsTool, ToolRegistry
 from backend.tools.registry import ConfirmationRequiredException
 
 # Load .env from the project root
@@ -70,7 +79,7 @@ class AgentCore:
                 session = self.session_store.create_session()
                 self.session_id = session["id"]
 
-        # Persistent Memory Integration (Phase 6.5)
+        # Persistent Memory Integration (Phase 6.5 & Phase 8.3)
         self.memory_retriever: Optional[MemoryRetriever] = None
         if enable_memory:
             if memory_retriever:
@@ -84,6 +93,16 @@ class AgentCore:
                     self.memory_retriever = None
 
         self.memory_context_builder = MemoryContextBuilder(retriever=self.memory_retriever)
+
+        # Phase 8.3/8.4 User Commands, UX & Management API Integration
+        self.memory_management_api: Optional[MemoryManagementAPI] = None
+        self.memory_command_parser: Optional[MemoryCommandParser] = None
+        self.memory_command_executor: Optional[MemoryCommandExecutor] = None
+        self.memory_ux_formatter = MemoryUXFormatter()
+        if self.memory_retriever and self.memory_retriever.memory_service:
+            self.memory_management_api = MemoryManagementAPI(memory_service=self.memory_retriever.memory_service)
+            self.memory_command_parser = MemoryCommandParser()
+            self.memory_command_executor = MemoryCommandExecutor(management_api=self.memory_management_api)
 
         # State for confirmation flow
         self.require_confirmation = True
@@ -282,9 +301,28 @@ class AgentCore:
 
     async def process_intent(self, user_input: str) -> Tuple[str, str, Optional[Dict[str, Any]]]:
         """
-        Process the user's intent via Groq, handling potential tool calls.
+        Process the user's intent via memory commands or Groq LLM.
         """
         async with self.context_lock:
+            # Phase 8.3/8.4: Memory Command Detection & UX Formatting (Application Control Path)
+            if self.memory_command_parser and self.memory_command_executor:
+                cmd = self.memory_command_parser.parse(user_input)
+                if cmd and cmd.intent != MemoryCommandIntent.UNKNOWN:
+                    res = self.memory_command_executor.execute(cmd)
+                    ux_res = self.memory_ux_formatter.format_command_result(res)
+                    asst_text = ux_res.response_text
+
+                    # Store user turn in history & SessionStore
+                    self.conversation_history.append({"role": "user", "content": user_input})
+                    self._persist_message("user", user_input)
+
+                    self.conversation_history.append({"role": "assistant", "content": asst_text})
+                    self._persist_message("assistant", asst_text)
+
+                    display_msg = format_display_response(asst_text)
+                    spoken_msg = generate_spoken_response(asst_text)
+                    return display_msg, spoken_msg, None
+
             self.conversation_history.append({"role": "user", "content": user_input})
             self._persist_message("user", user_input)
             return await self._resume_loop()

@@ -66,15 +66,19 @@ class MemoryCandidateExtractor:
     """
 
     @staticmethod
-    def extract(
+    def extract_candidates(
         user_input: str,
         provenance: MemoryProvenance = MemoryProvenance.USER_EXPLICIT,
         role: str = "user",
+        memory_service: Optional[Any] = None,
     ) -> List[MemoryCandidate]:
         """
         Extracts structured MemoryCandidate objects from user input.
         This function is strictly side-effect free and performs ZERO database writes.
         """
+        if memory_service and hasattr(memory_service, "is_capture_enabled") and not memory_service.is_capture_enabled():
+            return []
+
         # 1. Non-user role / non-user provenance guard
         if role.lower() in ("assistant", "system", "tool") or provenance in (MemoryProvenance.ASSISTANT_GENERATED, MemoryProvenance.TOOL_OUTPUT):
             return []
@@ -204,3 +208,5 @@ class MemoryCandidateExtractor:
             return (cat, "context_rule", clause, "Extracted context rule")
         else:
             return (MemoryCategory.USER_FACT, "user_fact", clause, "Extracted user fact")
+
+    extract = extract_candidates

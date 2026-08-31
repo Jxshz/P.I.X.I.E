@@ -73,6 +73,16 @@ class MemoryStore:
             )
 
             conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS privacy_settings (
+                    setting_key TEXT PRIMARY KEY,
+                    setting_value TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memories_category_key ON memories(category, key)"
             )
             conn.execute(
@@ -347,6 +357,42 @@ class MemoryStore:
                 )
             conn.commit()
             return cursor.rowcount
+        except Exception:
+            conn.rollback()
+            raise
+
+    def get_privacy_setting(self, setting_key: str, default_value: str = "true") -> str:
+        """Retrieves a privacy setting value safely from SQLite memory.db."""
+        try:
+            conn = self._get_connection()
+            cursor = conn.execute(
+                "SELECT setting_value FROM privacy_settings WHERE setting_key = ?",
+                (setting_key,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return str(row["setting_value"])
+            return default_value
+        except Exception:
+            return default_value
+
+    def set_privacy_setting(self, setting_key: str, setting_value: str) -> bool:
+        """Sets a privacy setting value atomically in SQLite memory.db."""
+        conn = self._get_connection()
+        now = time.time()
+        try:
+            conn.execute(
+                """
+                INSERT INTO privacy_settings (setting_key, setting_value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(setting_key) DO UPDATE SET
+                    setting_value = excluded.setting_value,
+                    updated_at = excluded.updated_at
+                """,
+                (setting_key, str(setting_value), now),
+            )
+            conn.commit()
+            return True
         except Exception:
             conn.rollback()
             raise

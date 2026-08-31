@@ -10,6 +10,13 @@ from backend.memory.boundaries import (
     is_sensitive_content,
     validate_metadata_json,
 )
+from backend.memory.commands import (
+    MemoryCommand,
+    MemoryCommandExecutor,
+    MemoryCommandIntent,
+    MemoryCommandParser,
+    MemoryCommandResult,
+)
 from backend.memory.conflict import (
     ConflictResolutionOutcome,
     MemoryConflictDecision,
@@ -20,11 +27,19 @@ from backend.memory.consent import (
     ConsentState,
     MemoryConsentManager,
 )
+from backend.memory.correction import (
+    CorrectionCandidate,
+    CorrectionDecision,
+    CorrectionDecisionOutcome,
+    CorrectionDetector,
+    MemoryCorrectionWorkflow,
+)
 from backend.memory.extraction import (
     MemoryCandidate,
     MemoryCandidateExtractor,
 )
 from backend.memory.integration import MemoryContextBuilder
+from backend.memory.management import MemoryManagementAPI
 from backend.memory.models import (
     MemoryCategory,
     MemoryRecord,
@@ -43,6 +58,18 @@ from backend.memory.policy import (
 )
 from backend.memory.retrieval import MemoryMatch, MemoryRetriever
 from backend.memory.service import MemoryService
+from backend.memory.ux import (
+    MemoryUXFormatter,
+    MemoryUXResponse,
+    MemoryUXStatus,
+    format_confidence_level,
+    format_provenance_source,
+)
+from backend.memory.observability_api import (
+    MemoryLifecycleStep,
+    MemoryObservabilityAPI,
+    ObservabilityEventDTO,
+)
 from backend.storage.memory_audit_store import AuditEvent, MemoryAuditStore, MemoryEventType
 from backend.storage.memory_store import MemoryStore
 
@@ -58,6 +85,17 @@ __all__ = [
     "validate_metadata_json",
     "MemoryStore",
     "MemoryService",
+    "MemoryManagementAPI",
+    "MemoryCommandIntent",
+    "MemoryCommand",
+    "MemoryCommandResult",
+    "MemoryCommandParser",
+    "MemoryCommandExecutor",
+    "MemoryUXStatus",
+    "MemoryUXResponse",
+    "MemoryUXFormatter",
+    "format_confidence_level",
+    "format_provenance_source",
     "MemoryMatch",
     "MemoryRetriever",
     "MemoryContextBuilder",
@@ -67,6 +105,11 @@ __all__ = [
     "MemoryCapturePolicy",
     "MemoryCandidate",
     "MemoryCandidateExtractor",
+    "CorrectionCandidate",
+    "CorrectionDecision",
+    "CorrectionDecisionOutcome",
+    "CorrectionDetector",
+    "MemoryCorrectionWorkflow",
     "ConsentState",
     "ConsentRecord",
     "MemoryConsentManager",
@@ -78,4 +121,7 @@ __all__ = [
     "MemoryAuditStore",
     "MemoryObservabilityService",
     "sanitize_audit_text",
+    "MemoryObservabilityAPI",
+    "ObservabilityEventDTO",
+    "MemoryLifecycleStep",
 ]

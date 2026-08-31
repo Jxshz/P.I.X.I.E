@@ -129,6 +129,7 @@ class MemoryService:
         self,
         memory_id: str,
         value: Optional[str] = None,
+        source: Optional[Union[MemorySource, str]] = None,
         metadata_json: Optional[str] = None,
         confidence: Optional[float] = None,
         expires_at: Optional[float] = None,
@@ -143,6 +144,7 @@ class MemoryService:
             return None
 
         new_value = value if value is not None else existing.value
+        new_source = MemorySource(source) if isinstance(source, str) else (source if source is not None else existing.source)
         new_metadata_json = metadata_json if metadata_json is not None else existing.metadata_json
         new_confidence = confidence if confidence is not None else existing.confidence
         new_expires_at = expires_at if expires_at is not None else existing.expires_at
@@ -153,7 +155,7 @@ class MemoryService:
             category=existing.category,
             key=existing.key,
             value=new_value,
-            source=existing.source,
+            source=new_source,
             confidence=new_confidence,
             created_at=existing.created_at,
             updated_at=time.time(),
@@ -203,6 +205,7 @@ class MemoryService:
             updated = self.update_memory(
                 memory_id=existing.id,
                 value=value,
+                source=source,
                 metadata_json=metadata_json,
                 confidence=confidence,
                 expires_at=expires_at,
@@ -329,6 +332,71 @@ class MemoryService:
     def count_memories(self, active_only: bool = True) -> int:
         """Returns count of stored memory records."""
         return self.store.count_memories(active_only=active_only)
+
+    def is_memory_enabled(self) -> bool:
+        """Returns True if global memory functionality is enabled."""
+        val = self.store.get_privacy_setting("memory_enabled", default_value="true")
+        return str(val).lower() == "true"
+
+    def is_capture_enabled(self) -> bool:
+        """Returns True if memory capture is enabled."""
+        if not self.is_memory_enabled():
+            return False
+        val = self.store.get_privacy_setting("memory_capture_enabled", default_value="true")
+        return str(val).lower() == "true"
+
+    def is_retrieval_enabled(self) -> bool:
+        """Returns True if memory retrieval/context injection is enabled."""
+        if not self.is_memory_enabled():
+            return False
+        val = self.store.get_privacy_setting("memory_retrieval_enabled", default_value="true")
+        return str(val).lower() == "true"
+
+    def set_memory_enabled(self, enabled: bool) -> bool:
+        """Enables or disables global memory functionality persistently."""
+        val_str = "true" if enabled else "false"
+        success = self.store.set_privacy_setting("memory_enabled", val_str)
+        if success and self.observability:
+            evt = MemoryEventType.PRIVACY_ENABLED if enabled else MemoryEventType.PRIVACY_DISABLED
+            self.observability.record_event(
+                evt,
+                reason="user_privacy_command",
+                result=f"memory_enabled={val_str}",
+            )
+        return success
+
+    def set_capture_enabled(self, enabled: bool) -> bool:
+        """Enables or disables memory capture persistently."""
+        val_str = "true" if enabled else "false"
+        success = self.store.set_privacy_setting("memory_capture_enabled", val_str)
+        if success and self.observability:
+            self.observability.record_event(
+                MemoryEventType.PRIVACY_SETTING_CHANGED,
+                reason="user_privacy_command",
+                result=f"memory_capture_enabled={val_str}",
+            )
+        return success
+
+    def set_retrieval_enabled(self, enabled: bool) -> bool:
+        """Enables or disables memory retrieval persistently."""
+        val_str = "true" if enabled else "false"
+        success = self.store.set_privacy_setting("memory_retrieval_enabled", val_str)
+        if success and self.observability:
+            self.observability.record_event(
+                MemoryEventType.PRIVACY_SETTING_CHANGED,
+                reason="user_privacy_command",
+                result=f"memory_retrieval_enabled={val_str}",
+            )
+        return success
+
+    def get_privacy_summary(self) -> Dict[str, Any]:
+        """Returns a privacy summary dictionary."""
+        return {
+            "memory_enabled": self.is_memory_enabled(),
+            "capture_enabled": self.is_capture_enabled(),
+            "retrieval_enabled": self.is_retrieval_enabled(),
+            "active_memory_count": self.count_memories(active_only=True),
+        }
 
     def close(self) -> None:
         """Closes underlying storage resources cleanly."""

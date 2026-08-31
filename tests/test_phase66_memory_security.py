@@ -429,7 +429,7 @@ async def test_30_no_automatic_memory_persistence_during_inference(memory_servic
 
     initial_count = memory_service.count_memories()
 
-    await agent.process_intent("Please remember that my favorite color is Blue")
+    await agent.process_intent("My favorite color is Blue, write a story about it.")
 
     # MemoryStore count MUST remain identical (0 new memories automatically created)
     assert memory_service.count_memories() == initial_count
