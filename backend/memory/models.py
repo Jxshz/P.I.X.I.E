@@ -79,10 +79,8 @@ class MemoryRecord:
                 raise MemoryValidationError("Memory record 'expires_at' must be a timestamp greater than created_at.")
 
         if self.metadata_json is not None:
-            try:
-                json.loads(self.metadata_json)
-            except Exception as e:
-                raise MemoryValidationError(f"Invalid JSON string in metadata_json: {e}")
+            from backend.memory.boundaries import validate_metadata_json
+            validate_metadata_json(self.metadata_json)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes the MemoryRecord to a dictionary."""

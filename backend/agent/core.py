@@ -10,6 +10,7 @@ from groq import AsyncGroq
 from dotenv import load_dotenv
 from backend.agent.personality import SYSTEM_PROMPT, generate_spoken_response, format_display_response
 from backend.agent.token_governor import TokenGovernor
+from backend.memory import MemoryContextBuilder, MemoryRetriever, MemoryService
 from backend.storage.session_store import SessionStore
 from backend.storage.usage_store import UsageStore
 from backend.tools import ToolRegistry, SystemDiagnosticsTool
@@ -40,7 +41,11 @@ class AgentCore:
         self,
         db_path: Optional[str] = None,
         session_store: Optional[SessionStore] = None,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        memory_service: Optional[MemoryService] = None,
+        memory_retriever: Optional[MemoryRetriever] = None,
+        enable_memory: bool = True,
+        memory_db_path: Optional[str] = None,
     ):
         # AsyncGroq automatically picks up GROQ_API_KEY from env
         self.client = AsyncGroq()
@@ -64,6 +69,21 @@ class AgentCore:
                 # Create a default session
                 session = self.session_store.create_session()
                 self.session_id = session["id"]
+
+        # Persistent Memory Integration (Phase 6.5)
+        self.memory_retriever: Optional[MemoryRetriever] = None
+        if enable_memory:
+            if memory_retriever:
+                self.memory_retriever = memory_retriever
+            elif memory_service:
+                self.memory_retriever = MemoryRetriever(memory_service=memory_service)
+            else:
+                try:
+                    self.memory_retriever = MemoryRetriever(db_path=memory_db_path)
+                except Exception:
+                    self.memory_retriever = None
+
+        self.memory_context_builder = MemoryContextBuilder(retriever=self.memory_retriever)
 
         # State for confirmation flow
         self.require_confirmation = True
@@ -255,6 +275,37 @@ class AgentCore:
             self._persist_message("user", user_input)
             return await self._resume_loop()
 
+    def _get_llm_messages(self) -> List[Dict[str, Any]]:
+        """
+        Constructs the message payload for LLM inference.
+        Injects retrieved untrusted memory context if available,
+        without mutating self.conversation_history or SessionStore.
+        """
+        if not hasattr(self, "memory_context_builder") or not self.memory_context_builder:
+            return list(self.conversation_history)
+
+        user_query = ""
+        for msg in reversed(self.conversation_history):
+            if msg.get("role") == "user" and msg.get("content"):
+                user_query = msg["content"]
+                break
+
+        if not user_query:
+            return list(self.conversation_history)
+
+        memory_context = self.memory_context_builder.build_memory_context(query=user_query)
+        if not memory_context:
+            return list(self.conversation_history)
+
+        llm_msgs = list(self.conversation_history)
+        if len(llm_msgs) >= 2 and llm_msgs[-1].get("role") == "user":
+            memory_msg = {"role": "system", "content": memory_context}
+            llm_msgs.insert(len(llm_msgs) - 1, memory_msg)
+        else:
+            llm_msgs.append({"role": "system", "content": memory_context})
+
+        return llm_msgs
+
     async def _resume_loop(self) -> Tuple[str, str, Optional[Dict[str, Any]]]:
         """
         Internal loop to run inference.
@@ -264,7 +315,8 @@ class AgentCore:
         for iteration in range(max_iterations):
             try:
                 self._trim_context()
-                is_allowed, error_msg, reservation = self.governor.preflight(self.conversation_history)
+                llm_messages = self._get_llm_messages()
+                is_allowed, error_msg, reservation = self.governor.preflight(llm_messages)
             except Exception as e:
                 if iteration == 0 and len(self.conversation_history) > 1:
                     self.conversation_history.pop()
@@ -284,7 +336,7 @@ class AgentCore:
             try:
                 tools = self.tool_registry.get_all_tool_schemas()
                 kwargs = {
-                    "messages": self.conversation_history,
+                    "messages": llm_messages,
                     "model": self.model,
                     "temperature": 0.7,
                     "max_tokens": self.governor.max_completion_tokens,

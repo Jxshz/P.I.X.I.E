@@ -327,6 +327,30 @@ class MemoryStore:
         row = cursor.fetchone()
         return row[0] if row else 0
 
+    def prune_expired_memories(self, hard_delete: bool = False) -> int:
+        """
+        Deactivates or permanently deletes memories whose expires_at timestamp has passed.
+        Returns the count of pruned memory records.
+        """
+        conn = self._get_connection()
+        now = time.time()
+        try:
+            if hard_delete:
+                cursor = conn.execute(
+                    "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at <= ?",
+                    (now,),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE memories SET is_active = 0 WHERE expires_at IS NOT NULL AND expires_at <= ? AND is_active = 1",
+                    (now,),
+                )
+            conn.commit()
+            return cursor.rowcount
+        except Exception:
+            conn.rollback()
+            raise
+
     def close(self) -> None:
         """Closes database connections safely."""
         with self._lock:
