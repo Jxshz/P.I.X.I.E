@@ -96,6 +96,20 @@ class AgentCore:
         # Load context from SessionStore or initialize default
         self._load_history_from_session_store()
 
+    @property
+    def last_memory_retrieval_stats(self) -> Dict[str, Any]:
+        """Exposes observability statistics for the most recent memory retrieval."""
+        if hasattr(self, "memory_context_builder") and self.memory_context_builder:
+            return self.memory_context_builder.last_retrieval_stats
+        return {
+            "retrieved": False,
+            "count": 0,
+            "relevance_scores": [],
+            "categories": [],
+            "memory_ids": [],
+            "retrieval_failed": False,
+        }
+
     def _load_history_from_session_store(self):
         """Loads persisted messages from session_store for session_id."""
         self.conversation_history = [

@@ -9,6 +9,7 @@ from backend.memory.models import (
     MemorySource,
     MemoryValidationError,
 )
+from backend.memory.observability import MemoryEventType, MemoryObservabilityService
 from backend.storage.memory_store import MemoryStore
 
 
@@ -16,15 +17,17 @@ class MemoryService:
     """
     Application-level CRUD and Lifecycle management service for P.I.X.I.E. persistent memory.
     Wraps MemoryStore, enforcing model validation, security boundaries,
-    and lifecycle state transitions while hiding storage internals.
+    observability logging, and lifecycle state transitions while hiding storage internals.
     """
 
     def __init__(
         self,
         db_path: Optional[str] = None,
         memory_store: Optional[MemoryStore] = None,
+        observability: Optional[MemoryObservabilityService] = None,
     ):
         self.store = memory_store or MemoryStore(db_path=db_path)
+        self.observability = observability
 
     def create_memory(
         self,
@@ -44,11 +47,19 @@ class MemoryService:
         try:
             cat_enum = category if isinstance(category, MemoryCategory) else MemoryCategory(category)
         except ValueError as e:
+            if self.observability:
+                self.observability.record_event(
+                    MemoryEventType.MEMORY_REJECTED, key=key, category=str(category), reason=str(e)
+                )
             raise MemoryValidationError(f"Invalid memory category: {category}") from e
 
         try:
             src_enum = source if isinstance(source, MemorySource) else MemorySource(source)
         except ValueError as e:
+            if self.observability:
+                self.observability.record_event(
+                    MemoryEventType.MEMORY_REJECTED, key=key, category=cat_enum.value, reason=str(e)
+                )
             raise MemoryValidationError(f"Invalid memory source: {source}") from e
 
         now = time.time()
@@ -66,8 +77,30 @@ class MemoryService:
             metadata_json=metadata_json,
         )
 
-        # Store performs record and boundary validation before writing
-        return self.store.save_memory(record)
+        try:
+            saved = self.store.save_memory(record)
+            if self.observability:
+                self.observability.record_event(
+                    MemoryEventType.MEMORY_CREATED,
+                    memory_id=saved.id,
+                    category=saved.category.value,
+                    key=saved.key,
+                    source=saved.source.value,
+                    confidence=saved.confidence,
+                    result="success",
+                )
+            return saved
+        except MemoryValidationError as err:
+            if self.observability:
+                evt = (
+                    MemoryEventType.MEMORY_SECURITY_REJECTED
+                    if "Security Violation" in str(err)
+                    else MemoryEventType.MEMORY_REJECTED
+                )
+                self.observability.record_event(
+                    evt, key=key, category=cat_enum.value, reason=str(err)
+                )
+            raise
 
     def get_memory(self, memory_id: str) -> Optional[MemoryRecord]:
         """Retrieves a memory record by ID."""
@@ -104,8 +137,6 @@ class MemoryService:
         """
         Updates fields of an existing memory record.
         Re-validates updated values against schema and security boundaries before saving.
-        Preserves original created_at and does not implicitly reactivate expired memories.
-        Returns the updated MemoryRecord, or None if memory_id does not exist.
         """
         existing = self.get_memory(memory_id)
         if not existing:
@@ -131,7 +162,27 @@ class MemoryService:
             metadata_json=new_metadata_json,
         )
 
-        return self.store.save_memory(updated_record)
+        try:
+            saved = self.store.save_memory(updated_record)
+            if self.observability:
+                self.observability.record_event(
+                    MemoryEventType.MEMORY_UPDATED,
+                    memory_id=saved.id,
+                    category=saved.category.value,
+                    key=saved.key,
+                    result="success",
+                )
+            return saved
+        except MemoryValidationError as err:
+            if self.observability:
+                self.observability.record_event(
+                    MemoryEventType.MEMORY_REJECTED,
+                    memory_id=existing.id,
+                    key=existing.key,
+                    category=existing.category.value,
+                    reason=str(err),
+                )
+            raise
 
     def supersede_memory(
         self,
@@ -155,13 +206,21 @@ class MemoryService:
                 metadata_json=metadata_json,
                 confidence=confidence,
                 expires_at=expires_at,
-                is_active=True, # Superseding explicitly activates the new memory state
+                is_active=True,
             )
             if updated is None:
                 raise MemoryValidationError(f"Failed to supersede memory with key: {key}")
+            if self.observability:
+                self.observability.record_event(
+                    MemoryEventType.MEMORY_SUPERSEDED,
+                    memory_id=updated.id,
+                    category=updated.category.value,
+                    key=updated.key,
+                    result=f"superseded_existing:{existing.id}",
+                )
             return updated
         else:
-            return self.create_memory(
+            created = self.create_memory(
                 category=category,
                 key=key,
                 value=value,
@@ -171,20 +230,37 @@ class MemoryService:
                 expires_at=expires_at,
                 is_active=True,
             )
+            if self.observability:
+                self.observability.record_event(
+                    MemoryEventType.MEMORY_SUPERSEDED,
+                    memory_id=created.id,
+                    category=created.category.value,
+                    key=created.key,
+                    result="created_new",
+                )
+            return created
 
     def forget_memory(self, memory_id: str) -> bool:
         """
         Soft-deactivates (forgets) a memory record by ID (is_active = False).
-        Returns True if memory existed and was deactivated, False otherwise.
         """
         if not memory_id or not isinstance(memory_id, str):
             return False
-        return self.store.delete_memory(memory_id, hard_delete=False)
+        rec = self.get_memory(memory_id)
+        success = self.store.delete_memory(memory_id, hard_delete=False)
+        if success and self.observability and rec:
+            self.observability.record_event(
+                MemoryEventType.MEMORY_FORGOTTEN,
+                memory_id=memory_id,
+                category=rec.category.value,
+                key=rec.key,
+                result="soft_deactivated",
+            )
+        return success
 
     def forget_memory_by_key(self, category: Union[MemoryCategory, str], key: str) -> bool:
         """
         Soft-deactivates an active memory record by category and logical key.
-        Returns True if record existed and was deactivated, False otherwise.
         """
         existing = self.get_memory_by_key(category, key, active_only=True)
         if not existing:
@@ -194,8 +270,6 @@ class MemoryService:
     def reactivate_memory(self, memory_id: str) -> Optional[MemoryRecord]:
         """
         Explicitly reactivates a forgotten/inactive memory record (is_active = True).
-        Re-validates record boundaries before saving.
-        Raises MemoryValidationError if memory has expired.
         """
         existing = self.get_memory(memory_id)
         if not existing:
@@ -203,25 +277,54 @@ class MemoryService:
 
         now = time.time()
         if existing.expires_at is not None and existing.expires_at <= now:
+            if self.observability:
+                self.observability.record_event(
+                    MemoryEventType.MEMORY_REJECTED,
+                    memory_id=memory_id,
+                    reason="Cannot reactivate expired memory",
+                )
             raise MemoryValidationError("Cannot reactivate an expired memory.")
 
-        return self.update_memory(memory_id=memory_id, is_active=True)
+        updated = self.update_memory(memory_id=memory_id, is_active=True)
+        if updated and self.observability:
+            self.observability.record_event(
+                MemoryEventType.MEMORY_REACTIVATED,
+                memory_id=memory_id,
+                category=updated.category.value,
+                key=updated.key,
+            )
+        return updated
 
     def prune_expired_memories(self, hard_delete: bool = False) -> int:
         """
-        Prunes (deactivates or permanently deletes) memories whose expires_at timestamp has passed.
-        Returns the total count of pruned records.
+        Prunes memories whose expires_at timestamp has passed.
         """
-        return self.store.prune_expired_memories(hard_delete=hard_delete)
+        count = self.store.prune_expired_memories(hard_delete=hard_delete)
+        if count > 0 and self.observability:
+            self.observability.record_event(
+                MemoryEventType.MEMORY_EXPIRED,
+                metadata={"pruned_count": count, "hard_delete": hard_delete},
+            )
+        return count
 
     def delete_memory(self, memory_id: str, hard_delete: bool = True) -> bool:
         """
         Deletes or deactivates a memory record by ID.
-        Returns True if successful, False if record did not exist.
         """
         if not memory_id or not isinstance(memory_id, str):
             return False
-        return self.store.delete_memory(memory_id, hard_delete=hard_delete)
+        rec = self.get_memory(memory_id)
+        success = self.store.delete_memory(memory_id, hard_delete=hard_delete)
+        if success and self.observability and rec:
+            evt = MemoryEventType.MEMORY_DELETED if hard_delete else MemoryEventType.MEMORY_FORGOTTEN
+            self.observability.record_event(
+                evt,
+                memory_id=memory_id,
+                category=rec.category.value,
+                key=rec.key,
+                result="hard_deleted" if hard_delete else "soft_deactivated",
+            )
+        return success
 
     def count_memories(self, active_only: bool = True) -> int:
         """Returns count of stored memory records."""
